@@ -1,0 +1,22 @@
+:root {
+  /* Colors */
+  --color-primary: #008069;
+  --color-secondary: #00a884;
+  --color-bg-default: #d1d7db;
+  --color-bg-app: #f0f2f5;
+  --color-bg-chat: #efeae2;
+  --color-bg-sidebar: #ffffff;
+  --color-bg-message-in: #ffffff;
+  --color-bg-message-out: #d9fdd3;
+
+  /* Text */
+  --color-text-primary: #111b21;
+  --color-text-secondary: #667781;
+  --color-text-timestamp: #667781;
+
+  /* Borders */
+  --color-border: #e9edef;
+
+  /* Layout */
+  --header-height: 60px;
+}

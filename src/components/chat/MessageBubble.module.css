@@ -1,0 +1,222 @@
+.attachmentStatus {
+  padding: 10px;
+  font-size: 12px;
+}
+
+.attachmentStatusLoading {
+  color: var(--color-text-secondary);
+}
+
+.attachmentStatusError {
+  color: #d32f2f;
+}
+
+.attachmentWrapper {
+  margin-bottom: 5px;
+}
+
+.attachmentMedia {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.attachmentImage {
+  display: block;
+}
+
+.audioWrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+}
+
+.audioPlayer {
+  width: 100%;
+  min-width: 200px;
+}
+
+.documentLink {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--color-text-primary);
+}
+
+.documentIcon {
+  margin-right: 10px;
+  font-size: 24px;
+}
+
+.documentInfo {
+  flex: 1;
+  overflow: hidden;
+}
+
+.documentName {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.documentSize {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+
+.documentDownloadIcon {
+  margin-left: 10px;
+}
+
+.messageContainer {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 8px;
+}
+
+.messageContainerWithReactions {
+  margin-bottom: 16px;
+}
+
+.messageContainerMe {
+  align-items: flex-end;
+}
+
+.messageContainerOther {
+  align-items: flex-start;
+}
+
+.bubbleBase {
+  max-width: 65%;
+  padding: 6px 7px 8px 9px;
+  border-radius: 7.5px;
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  position: relative;
+}
+
+.bubbleMe {
+  background-color: #d9fdd3;
+  border-top-right-radius: 0;
+}
+
+.bubbleOther {
+  background-color: #ffffff;
+  border-top-left-radius: 0;
+}
+
+.messageContent {
+  font-size: 14.2px;
+  line-height: 19px;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.senderName {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--color-secondary);
+  margin-bottom: 4px;
+}
+
+.replyBubble {
+  border-left: 3px solid var(--color-secondary);
+  background-color: rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.replyBubbleMe {
+  border-left-color: #53bdeb;
+  background-color: rgba(83, 189, 235, 0.12);
+}
+
+.replyBubbleOther {
+  border-left-color: var(--color-secondary);
+}
+
+.replyLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 2px;
+}
+
+.replyText {
+  font-size: 12.5px;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.moreButton {
+  background: none;
+  border: none;
+  color: #00a5f4;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 4px;
+  font-size: 14.2px;
+}
+
+.metaRow {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 2px;
+  gap: 3px;
+}
+
+.timestamp {
+  font-size: 11px;
+  color: var(--color-text-timestamp);
+}
+
+.statusRead {
+  color: #53bdeb;
+}
+
+.statusSent {
+  color: var(--color-text-timestamp);
+}
+
+.reactionsRow {
+  position: absolute;
+  bottom: -10px;
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px 4px;
+}
+
+.reactionsRowMe {
+  right: 8px;
+}
+
+.reactionsRowOther {
+  left: 8px;
+}
+
+.reactionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background-color: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+}
+
+.reactionEmoji {
+  line-height: 1;
+}
+
+.reactionCount {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
