@@ -2,6 +2,8 @@ import type { Message, Attachment } from '../../types/chat';
 import type { ParseResult } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import JSZip from 'jszip';
+import type { CsvRow } from '../utils';
+import { getAttachmentType, mapHeaderRow, parseCsv, toRowObject } from '../utils';
 
 const LUCY_NAME = 'Luciana Milella';
 const VALERIO_NAME = 'Valerio Donati';
@@ -19,8 +21,6 @@ const VALERIO_EXPORTS = new Set([
 
 const SKIP_MESSAGE_TYPES = new Set(['10', '59', '66']);
 
-type CsvRow = Record<string, string>;
-
 function normalizeExportId(name: string) {
     return name.replace(/\.zip$/i, '').replace(/\.csv$/i, '');
 }
@@ -32,80 +32,6 @@ function getExportOwner(fileName: string) {
     return null;
 }
 
-function parseCsv(text: string): string[][] {
-    const rows: string[][] = [];
-    let row: string[] = [];
-    let field = '';
-    let inQuotes = false;
-    let i = 0;
-
-    while (i < text.length) {
-        const char = text[i];
-        const next = text[i + 1];
-
-        if (char === '"') {
-            if (inQuotes && next === '"') {
-                field += '"';
-                i += 2;
-                continue;
-            }
-            inQuotes = !inQuotes;
-            i += 1;
-            continue;
-        }
-
-        if (!inQuotes && (char === '\n' || char === '\r')) {
-            if (char === '\r' && next === '\n') {
-                i += 1;
-            }
-            row.push(field);
-            rows.push(row);
-            row = [];
-            field = '';
-            i += 1;
-            continue;
-        }
-
-        if (!inQuotes && char === ',') {
-            row.push(field);
-            field = '';
-            i += 1;
-            continue;
-        }
-
-        field += char;
-        i += 1;
-    }
-
-    row.push(field);
-    rows.push(row);
-
-    return rows;
-}
-
-function mapHeaderRow(rows: string[][]): { headers: string[]; data: string[][] } {
-    const [headerRow, ...dataRows] = rows;
-    if (!headerRow) {
-        throw new Error('CSV appears to be empty.');
-    }
-    return { headers: headerRow, data: dataRows };
-}
-
-function toRowObject(headers: string[], row: string[]): CsvRow {
-    const obj: CsvRow = {};
-    headers.forEach((header, index) => {
-        obj[header] = row[index] ?? '';
-    });
-    return obj;
-}
-
-function getAttachmentType(fileName: string): 'image' | 'video' | 'audio' | 'document' {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'].includes(ext || '')) return 'image';
-    if (['mp4', 'mov', 'm4v', '3gp'].includes(ext || '')) return 'video';
-    if (['opus', 'mp3', 'wav', 'ogg', 'm4a', 'aac'].includes(ext || '')) return 'audio';
-    return 'document';
-}
 
 function buildContent(row: CsvRow): string {
     const text = row.text?.trim() ?? '';
@@ -159,8 +85,8 @@ function parseReactions(row: CsvRow): { emoji: string; count: number }[] | undef
     return Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count }));
 }
 
-export async function parseWhatsAppZip(file: File, chatId: string): Promise<ParseResult> {
-    const zip = await JSZip.loadAsync(file);
+export async function parseWhatsAppZip(file: File, chatId: string, zipInput?: JSZip): Promise<ParseResult> {
+    const zip = zipInput ?? await JSZip.loadAsync(file);
     const logs: string[] = [];
     const errors: string[] = [];
     const messages: Message[] = [];
@@ -217,6 +143,7 @@ export async function parseWhatsAppZip(file: File, chatId: string): Promise<Pars
 
         const content = buildContent(row);
         const mediaLocalPath = row.media_local_path?.trim() ?? '';
+        const mediaThumbnailPath = row.media_thumbnail_path?.trim() ?? '';
         const quotedText = row.quoted_text?.trim() ?? '';
         const quotedMessagePk = row.quoted_message_pk?.trim() ?? '';
         const quotedStanzaId = row.quoted_stanza_id?.trim() ?? '';
@@ -227,22 +154,43 @@ export async function parseWhatsAppZip(file: File, chatId: string): Promise<Pars
         const reactions = parseReactions(row);
 
         let attachments: Attachment[] | undefined;
-        if (mediaLocalPath) {
-            const mediaEntry = zip.file(mediaLocalPath);
+        if (mediaLocalPath || mediaThumbnailPath) {
+            const candidates = [
+                mediaLocalPath,
+                mediaThumbnailPath,
+                mediaLocalPath ? `${mediaLocalPath}.thumb` : '',
+                mediaThumbnailPath ? `${mediaThumbnailPath}.thumb` : ''
+            ].filter(Boolean);
+
+            let mediaEntry: JSZip.JSZipObject | null = null;
+            let resolvedPath = '';
+
+            for (const candidate of candidates) {
+                const entry = zip.file(candidate);
+                if (entry) {
+                    mediaEntry = entry;
+                    resolvedPath = candidate;
+                    break;
+                }
+            }
+
             if (!mediaEntry) {
-                logs.push(`Missing media file: ${mediaLocalPath}`);
+                if (mediaLocalPath) {
+                    logs.push(`Missing media file: ${mediaLocalPath}`);
+                } else if (mediaThumbnailPath) {
+                    logs.push(`Missing media file: ${mediaThumbnailPath}`);
+                }
             } else {
-                const cached = attachmentCache.get(mediaLocalPath);
+                const cached = attachmentCache.get(resolvedPath);
                 const blob = cached ?? (await mediaEntry.async('blob'));
                 if (!cached) {
-                    attachmentCache.set(mediaLocalPath, blob);
+                    attachmentCache.set(resolvedPath, blob);
                 }
-                const fileName = mediaLocalPath.split('/').pop() || mediaLocalPath;
+                const fileName = resolvedPath.split('/').pop() || resolvedPath;
                 const mimeTypeHint = row.vcard_string?.includes('/') ? row.vcard_string : undefined;
                 attachments = [{
                     id: uuidv4(),
                     type: getAttachmentType(fileName),
-                    url: '',
                     fileName,
                     mimeType: mimeTypeHint || blob.type,
                     size: blob.size,
@@ -277,6 +225,7 @@ export async function parseWhatsAppZip(file: File, chatId: string): Promise<Pars
             quotedText: quotedText || undefined,
             quotedSender,
             reactions,
+            source: 'whatsapp',
             externalId
         };
 

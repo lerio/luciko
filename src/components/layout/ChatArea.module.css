@@ -35,6 +35,7 @@
 .headerInfo {
   display: flex;
   align-items: center;
+  gap: 10px;
 }
 
 .avatar {
@@ -42,7 +43,6 @@
   height: 40px;
   border-radius: 50%;
   background-color: #ccc;
-  margin-right: 15px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -92,4 +92,27 @@
 
 .scrollToBottomButton:hover {
   background: #f6f6f6;
+}
+
+.scrollToBookmarkButton {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #ffffff;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.scrollToBookmarkButton:hover {
+  background: #f6f6f6;
+}
+
+.scrollToBookmarkButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

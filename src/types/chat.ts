@@ -1,18 +1,11 @@
-export interface User {
-    id: string;
-    name: string;
-    avatarUrl?: string;
-    color?: string; // For generating avatar background if no image
-}
-
 export interface Attachment {
     id: string;
     type: 'image' | 'video' | 'audio' | 'document';
-    url: string; // Blob URL or internal ID
     fileName: string;
     mimeType?: string;
     size?: number;
     file?: Blob; // Raw file data for persistence
+    contentHash?: string; // SHA-256 of file contents when available
 }
 
 export interface Message {
@@ -26,6 +19,7 @@ export interface Message {
     quotedText?: string;
     quotedSender?: string;
     reactions?: { emoji: string; count: number }[];
+    source?: 'whatsapp' | 'facebook' | 'instagram' | 'googlechat' | 'googlechat_old' | 'imessage' | 'gmail';
     externalId?: string; // For deduplication (hash or unique string)
 }
 
@@ -33,7 +27,5 @@ export interface Chat {
     id: string;
     name: string;
     isGroup: boolean;
-    participants: User[];
-    lastMessage?: Message;
     avatarUrl?: string;
 }

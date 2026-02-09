@@ -1,13 +1,21 @@
 import { useState, useEffect } from "react";
 import { format } from "date-fns";
-import { Check, CheckCheck, Download } from "lucide-react";
+import { Bookmark, Check, CheckCheck, Download } from "lucide-react";
 import { getAttachment } from "../../store/db";
 import type { Attachment, Message } from "../../types/chat";
 import styles from "./MessageBubble.module.css";
+import whatsappLogo from "../../assets/whatsapp.png";
+import facebookLogo from "../../assets/facebook-messenger.png";
+import instagramLogo from "../../assets/instagram.png";
+import googleChatLogo from "../../assets/google-chat.png";
+import imessageLogo from "../../assets/imessage.png";
+import gmailLogo from "../../assets/gmail.webp";
 
 interface MessageBubbleProps {
   message: Message;
   isMe: boolean;
+  isBookmarked: boolean;
+  onBookmark: (messageId: string) => void;
 }
 
 interface AttachmentPreviewProps {
@@ -90,7 +98,6 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
               controls
               className={styles.audioPlayer}
               controlsList="nodownload noplaybackrate"
-              disablePictureInPicture
             />
           </div>
         );
@@ -123,73 +130,173 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
   );
 }
 
-export function MessageBubble({ message, isMe }: MessageBubbleProps) {
+export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: MessageBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const shouldTruncate = message.content.length > TRUNCATE_LIMIT && !isExpanded;
   const displayContent = shouldTruncate
     ? message.content.substring(0, TRUNCATE_LIMIT) + "..."
     : message.content;
+  const sourceLogo = (() => {
+    switch (message.source) {
+      case "whatsapp":
+        return { src: whatsappLogo, alt: "WhatsApp" };
+      case "facebook":
+        return { src: facebookLogo, alt: "Facebook Messenger" };
+      case "instagram":
+        return { src: instagramLogo, alt: "Instagram" };
+      case "googlechat":
+        return { src: googleChatLogo, alt: "Google Chat" };
+      case "googlechat_old":
+        return { src: googleChatLogo, alt: "Google Chat" };
+      case "imessage":
+        return { src: imessageLogo, alt: "iMessage" };
+      case "gmail":
+        return { src: gmailLogo, alt: "Gmail" };
+      default:
+        return null;
+    }
+  })();
+
+  const renderContent = (content: string, isGmail: boolean) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+    const renderLines = (lines: string[], keyPrefix: string) =>
+      lines.map((line, lineIndex) => (
+        <span key={`${keyPrefix}-line-${lineIndex}`}>
+          {line.split(urlRegex).map((part, partIndex) => {
+            if (part.match(urlRegex)) {
+              return (
+                <a
+                  key={`${keyPrefix}-link-${lineIndex}-${partIndex}`}
+                  href={part}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={styles.messageLink}
+                >
+                  {part}
+                </a>
+              );
+            }
+            return <span key={`${keyPrefix}-text-${lineIndex}-${partIndex}`}>{part}</span>;
+          })}
+          {lineIndex < lines.length - 1 && <br />}
+        </span>
+      ));
+
+    if (isGmail) {
+      const separatorIndex = content.indexOf("\n\n");
+      const subject = separatorIndex >= 0 ? content.slice(0, separatorIndex) : content.split("\n")[0] || "";
+      const body = separatorIndex >= 0 ? content.slice(separatorIndex + 2) : content.split("\n").slice(1).join("\n");
+      const bodyLines = body.split("\n");
+
+      return (
+        <>
+          <strong>{subject}</strong>
+          <br />
+          <br />
+          {renderLines(bodyLines, "gmail")}
+        </>
+      );
+    }
+
+    const lines = content.split("\n");
+    return renderLines(lines, "default");
+  };
 
   return (
     <div
+      id={`message-${message.id}`}
       className={`${styles.messageContainer} ${message.reactions && message.reactions.length > 0 ? styles.messageContainerWithReactions : ''} ${isMe ? styles.messageContainerMe : styles.messageContainerOther}`}
     >
-      <div
-        className={`${styles.bubbleBase} ${isMe ? styles.bubbleMe : styles.bubbleOther}`}
-      >
-        <div className={styles.messageContent}>
-          {/* Sender Name (if not me, or always if debugging) */}
-          {!isMe && (
-            <div className={styles.senderName}>
-              {message.senderId}
-            </div>
-          )}
-          {message.quotedText && (
-            <div className={`${styles.replyBubble} ${isMe ? styles.replyBubbleMe : styles.replyBubbleOther}`}>
-              <div className={styles.replyLabel}>{message.quotedSender || 'Reply'}</div>
-              <div className={styles.replyText}>{message.quotedText}</div>
-            </div>
-          )}
-          {/* Attachments */}
-          {message.attachments &&
-            message.attachments.map((att: Attachment) => (
-              <AttachmentPreview key={att.id} attachment={att} />
-            ))}
-          {displayContent}
-          {shouldTruncate && (
-            <button
-              onClick={() => setIsExpanded(true)}
-              className={styles.moreButton}
-            >
-              more
-            </button>
-          )}
-        </div>
-        <div className={styles.metaRow}>
-          <span className={styles.timestamp}>{format(message.timestamp, "HH:mm")}</span>
-          {isMe && (
+      <div className={`${styles.messageRow} ${isMe ? styles.messageRowMe : styles.messageRowOther}`}>
+        {!isMe && (
+          <button
+            type="button"
+            className={`${styles.bookmarkButton} ${isBookmarked ? styles.bookmarkButtonActive : ""}`}
+            onClick={() => onBookmark(message.id)}
+            aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
+          >
+            <Bookmark size={14} />
+          </button>
+        )}
+        <div
+          className={`${styles.bubbleBase} ${isMe ? styles.bubbleMe : styles.bubbleOther}`}
+        >
+          {sourceLogo && (
             <span
-              className={message.status === "read" ? styles.statusRead : styles.statusSent}
+              className={`${styles.sourceBadge} ${styles[`sourceBadge_${message.source ?? "unknown"}`]} ${isMe ? styles.sourceBadgeMe : styles.sourceBadgeOther}`}
             >
-              {message.status === "read" ? (
-                <CheckCheck size={14} />
-              ) : (
-                <Check size={14} />
-              )}
+              <img
+                src={sourceLogo.src}
+                alt={`${sourceLogo.alt} logo`}
+                className={styles.sourceLogo}
+              />
             </span>
           )}
-        </div>
-        {message.reactions && message.reactions.length > 0 && (
-          <div className={`${styles.reactionsRow} ${isMe ? styles.reactionsRowMe : styles.reactionsRowOther}`}>
-            {message.reactions.map((reaction) => (
-              <div key={reaction.emoji} className={styles.reactionChip}>
-                <span className={styles.reactionEmoji}>{reaction.emoji}</span>
-                {reaction.count > 1 && (
-                  <span className={styles.reactionCount}>{reaction.count}</span>
-                )}
+          <div className={styles.messageContent}>
+            {/* Sender Name (if not me, or always if debugging) */}
+            {!isMe && (
+              <div className={styles.senderName}>
+                {message.senderId}
               </div>
-            ))}
+            )}
+            {message.quotedText && (
+              <div className={`${styles.replyBubble} ${isMe ? styles.replyBubbleMe : styles.replyBubbleOther}`}>
+                <div className={styles.replyLabel}>{message.quotedSender || 'Reply'}</div>
+                <div className={styles.replyText}>{message.quotedText}</div>
+              </div>
+            )}
+            {/* Attachments */}
+            {message.attachments &&
+              message.attachments.map((att: Attachment) => (
+                <AttachmentPreview key={att.id} attachment={att} />
+              ))}
+            {renderContent(displayContent, message.source === "gmail")}
+            {shouldTruncate && (
+              <button
+                onClick={() => setIsExpanded(true)}
+                className={styles.moreButton}
+              >
+                more
+              </button>
+            )}
           </div>
+          <div className={styles.metaRow}>
+            <span className={styles.timestamp}>{format(message.timestamp, "HH:mm")}</span>
+            {isMe && (
+              <span
+                className={message.status === "read" ? styles.statusRead : styles.statusSent}
+              >
+                {message.status === "read" ? (
+                  <CheckCheck size={14} />
+                ) : (
+                  <Check size={14} />
+                )}
+              </span>
+            )}
+          </div>
+          {message.reactions && message.reactions.length > 0 && (
+            <div className={`${styles.reactionsRow} ${isMe ? styles.reactionsRowMe : styles.reactionsRowOther}`}>
+              {message.reactions.map((reaction) => (
+                <div key={reaction.emoji} className={styles.reactionChip}>
+                  <span className={styles.reactionEmoji}>{reaction.emoji}</span>
+                  {reaction.count > 1 && (
+                    <span className={styles.reactionCount}>{reaction.count}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {isMe && (
+          <button
+            type="button"
+            className={`${styles.bookmarkButton} ${isBookmarked ? styles.bookmarkButtonActive : ""}`}
+            onClick={() => onBookmark(message.id)}
+            aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
+          >
+            <Bookmark size={14} />
+          </button>
         )}
       </div>
     </div>

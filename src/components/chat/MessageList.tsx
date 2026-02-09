@@ -7,9 +7,11 @@ import styles from './MessageList.module.css';
 interface MessageListProps {
     messages: Message[];
     currentUserId: string;
+    bookmarkedMessageId: string | null;
+    onBookmark: (messageId: string) => void;
 }
 
-export function MessageList({ messages, currentUserId }: MessageListProps) {
+export function MessageList({ messages, currentUserId, bookmarkedMessageId, onBookmark }: MessageListProps) {
     const { nodes } = messages.reduce(
         (acc, msg) => {
             const isNewDay = !acc.lastDate || !isSameDay(acc.lastDate, msg.timestamp);
@@ -26,6 +28,8 @@ export function MessageList({ messages, currentUserId }: MessageListProps) {
                     key={msg.id}
                     message={msg}
                     isMe={msg.senderId === currentUserId}
+                    isBookmarked={bookmarkedMessageId === msg.id}
+                    onBookmark={onBookmark}
                 />
             );
 

@@ -74,11 +74,11 @@
 .messageContainer {
   display: flex;
   flex-direction: column;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 
 .messageContainerWithReactions {
-  margin-bottom: 16px;
+  margin-bottom: 20px;
 }
 
 .messageContainerMe {
@@ -89,12 +89,80 @@
   align-items: flex-start;
 }
 
+.messageRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.messageRowMe {
+  justify-content: flex-end;
+}
+
+.messageRowOther {
+  justify-content: flex-start;
+}
+
 .bubbleBase {
   max-width: 65%;
   padding: 6px 7px 8px 9px;
   border-radius: 7.5px;
   box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
   position: relative;
+}
+
+.sourceBadge {
+  position: absolute;
+  top: -8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  padding: 4px;
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.08);
+}
+
+.sourceLogo {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  display: block;
+}
+
+.sourceBadgeMe {
+  right: -8px;
+}
+
+.sourceBadgeOther {
+  left: -8px;
+}
+
+.sourceBadge_whatsapp {
+  border-color: rgba(37, 211, 102, 0.6);
+}
+
+.sourceBadge_facebook {
+  border-color: rgba(24, 119, 242, 0.6);
+}
+
+.sourceBadge_instagram {
+  border-color: rgba(225, 48, 108, 0.6);
+}
+
+.sourceBadge_googlechat {
+  border-color: rgba(52, 168, 83, 0.6);
+}
+
+.sourceBadge_googlechat_old {
+  border-color: rgba(15, 157, 88, 0.6);
+}
+
+.sourceBadge_imessage {
+  border-color: rgba(52, 199, 89, 0.6);
 }
 
 .bubbleMe {
@@ -163,6 +231,12 @@
   font-size: 14.2px;
 }
 
+.messageLink {
+  color: #00a5f4;
+  text-decoration: underline;
+  word-break: break-word;
+}
+
 .metaRow {
   display: flex;
   justify-content: flex-end;
@@ -182,6 +256,34 @@
 
 .statusSent {
   color: var(--color-text-timestamp);
+}
+
+.bookmarkButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #ffffff;
+  color: var(--color-text-timestamp);
+  cursor: pointer;
+  padding: 0;
+}
+
+.bookmarkButton:hover {
+  background: #f6f6f6;
+}
+
+.bookmarkButton.bookmarkButtonActive {
+  background: #008069;
+  color: #ffffff;
+  border-color: #008069;
+}
+
+.bookmarkButton.bookmarkButtonActive:hover {
+  background: #008069;
 }
 
 .reactionsRow {

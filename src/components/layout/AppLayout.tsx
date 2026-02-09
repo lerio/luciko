@@ -1,20 +1,22 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Chat, Message } from '../../types/chat';
+import type { Message } from '../../types/chat';
 import { ChatArea } from './ChatArea';
 import { ImportPage } from '../import/ImportPage';
-import { getChats, getMessagesPaginated, getMessagesCount, initDB } from '../../store/db';
+import { getMessageOffsetInChat, getMessagesPaginated, getMessagesCount } from '../../store/db';
 import { Upload, MessageSquare } from 'lucide-react';
 import styles from './AppLayout.module.css';
+import { TARGET_CHAT } from '../../constants/chat';
 
 const PAGE_SIZE = 100;
 
 export function AppLayout() {
-    const [activeChat, setActiveChat] = useState<Chat | null>(null);
+    const activeChat = TARGET_CHAT;
     const [messages, setMessages] = useState<Message[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
     const [currentView, setCurrentView] = useState<'chat' | 'import'>('chat');
     const [offset, setOffset] = useState(0);
-    const [hasMore, setHasMore] = useState(false); // Initialize to false
+    const [hasOlder, setHasOlder] = useState(false);
+    const [hasNewer, setHasNewer] = useState(false);
+    const [totalCount, setTotalCount] = useState(0);
     const [isFetching, setIsFetching] = useState(false);
 
     const fetchMessages = useCallback(
@@ -22,34 +24,19 @@ export function AppLayout() {
         []
     );
 
-    // Initial load of chats
-    useEffect(() => {
-        const loadData = async () => {
-            try {
-                await initDB();
-                const loadedChats = await getChats();
-                setActiveChat(loadedChats[0] ?? null);
-            } catch (error) {
-                console.error('Failed to load data:', error);
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
-        loadData();
-    }, [currentView]);
-
     // Initial messages or reset when chat changes
     useEffect(() => {
-        if (!activeChat) return;
-
         const loadInitialMessages = async () => {
             setIsFetching(true);
             try {
-                const msgs = await fetchMessages(activeChat.id, 0);
+                const total = await getMessagesCount(activeChat.id);
+                const start = 0;
+                const msgs = await fetchMessages(activeChat.id, start);
                 setMessages(msgs);
-                setOffset(msgs.length);
-                setHasMore(msgs.length === PAGE_SIZE);
+                setOffset(start);
+                setTotalCount(total);
+                setHasOlder(false);
+                setHasNewer(msgs.length < total);
             } catch (error) {
                 console.error('Failed to load initial messages:', error);
             } finally {
@@ -58,18 +45,20 @@ export function AppLayout() {
         };
 
         loadInitialMessages();
-    }, [activeChat, currentView, fetchMessages]);
+    }, [activeChat.id, currentView, fetchMessages]);
 
     const loadLatestMessages = async () => {
-        if (!activeChat || isFetching) return;
+        if (isFetching) return;
         setIsFetching(true);
         try {
             const total = await getMessagesCount(activeChat.id);
             const start = Math.max(0, total - PAGE_SIZE);
             const latest = await fetchMessages(activeChat.id, start);
             setMessages(latest);
-            setOffset(start + latest.length);
-            setHasMore(start > 0);
+            setOffset(start);
+            setTotalCount(total);
+            setHasOlder(start > 0);
+            setHasNewer(start + latest.length < total);
         } catch (error) {
             console.error('Failed to load latest messages:', error);
         } finally {
@@ -77,8 +66,8 @@ export function AppLayout() {
         }
     };
 
-    const loadMoreMessages = async () => {
-        if (!activeChat || !hasMore || isFetching) return 0;
+    const loadOlderMessages = async () => {
+        if (!hasOlder || isFetching) return 0;
 
         setIsFetching(true);
         try {
@@ -91,10 +80,11 @@ export function AppLayout() {
                     return [...uniqueNew, ...prev];
                 });
                 setOffset(nextOffset);
-                setHasMore(nextOffset > 0);
+                setHasOlder(nextOffset > 0);
+                setHasNewer(nextOffset + nextBatch.length + messages.length < totalCount);
                 return nextBatch.length;
             }
-            setHasMore(false);
+            setHasOlder(false);
             return 0;
         } catch (error) {
             console.error('Failed to load more messages:', error);
@@ -104,27 +94,56 @@ export function AppLayout() {
         }
     };
 
-    if (isLoading) {
-        return (
-            <div className={`${styles.fullScreen} ${styles.centered}`}>
-                Loading Luciko...
-            </div>
-        );
-    }
+    const loadNewerMessages = async () => {
+        if (!hasNewer || isFetching) return 0;
 
-    if (!activeChat && currentView === 'chat') {
-        return (
-            <div className={`${styles.fullScreen} ${styles.centered} ${styles.emptyState}`}>
-                <div style={{ fontSize: '18px' }}>No chat history found.</div>
-                <button
-                    onClick={() => setCurrentView('import')}
-                    className={styles.ctaButton}
-                >
-                    Go to Import
-                </button>
-            </div>
-        );
-    }
+        setIsFetching(true);
+        try {
+            const start = offset + messages.length;
+            const nextBatch = await fetchMessages(activeChat.id, start);
+            if (nextBatch.length > 0) {
+                setMessages(prev => {
+                    const existingIds = new Set(prev.map(m => m.id));
+                    const uniqueNew = nextBatch.filter(m => !existingIds.has(m.id));
+                    return [...prev, ...uniqueNew];
+                });
+                setHasNewer(start + nextBatch.length < totalCount);
+                return nextBatch.length;
+            }
+            setHasNewer(false);
+            return 0;
+        } catch (error) {
+            console.error('Failed to load newer messages:', error);
+            return 0;
+        } finally {
+            setIsFetching(false);
+        }
+    };
+
+    const jumpToMessage = async (messageId: string): Promise<boolean> => {
+        if (isFetching) return false;
+        setIsFetching(true);
+        try {
+            const position = await getMessageOffsetInChat(activeChat.id, messageId);
+            if (position === null) {
+                return false;
+            }
+            const total = await getMessagesCount(activeChat.id);
+            const start = Math.max(0, Math.min(position - Math.floor(PAGE_SIZE / 2), Math.max(0, total - PAGE_SIZE)));
+            const msgs = await fetchMessages(activeChat.id, start);
+            setMessages(msgs);
+            setOffset(start);
+            setTotalCount(total);
+            setHasOlder(start > 0);
+            setHasNewer(start + msgs.length < total);
+            return true;
+        } catch (error) {
+            console.error('Failed to jump to message:', error);
+            return false;
+        } finally {
+            setIsFetching(false);
+        }
+    };
 
     return (
         <div className={styles.container}>
@@ -155,9 +174,12 @@ export function AppLayout() {
                     <ChatArea
                         activeChat={activeChat}
                         messages={messages}
-                        onLoadMore={loadMoreMessages}
-                        hasMore={hasMore}
+                        onLoadOlder={loadOlderMessages}
+                        onLoadNewer={loadNewerMessages}
+                        hasOlder={hasOlder}
+                        hasNewer={hasNewer}
                         onJumpToLatest={loadLatestMessages}
+                        onJumpToBookmark={jumpToMessage}
                     />
                 ) : (
                     <ImportPage />

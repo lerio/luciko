@@ -1,20 +1,91 @@
 import { useState, useRef } from 'react';
 import type { ChangeEvent } from 'react';
 import { Upload, CheckCircle, AlertCircle } from 'lucide-react';
+import JSZip from 'jszip';
 import { parseWhatsAppZip } from '../../importers/whatsapp/parser';
-import { importMessages, saveChat } from '../../store/db';
+import { parseFacebookZip, parseInstagramZip } from '../../importers/facebook/parser';
+import { parseGoogleChatZip } from '../../importers/googlechat/parser';
+import { parseOldGoogleChatCsv } from '../../importers/googlechat/oldCsv';
+import { parseIMessageJson } from '../../importers/imessage/parser';
+import { parseGmailZip } from '../../importers/gmail/parser';
+import { importMessages } from '../../store/db';
+import { TARGET_CHAT, TARGET_CHAT_ID } from '../../constants/chat';
 import styles from './ImportPage.module.css';
 
-const TARGET_CHAT_ID = 'c1';
-const TARGET_CHAT = {
-    id: TARGET_CHAT_ID,
-    name: 'Luciana Milella',
-    isGroup: false,
-    participants: [
-        { id: 'Valerio Donati', name: 'Valerio Donati' },
-        { id: 'Luciana Milella', name: 'Luciana Milella' }
-    ]
+type ImportType =
+    | 'whatsapp'
+    | 'gmail'
+    | 'instagram'
+    | 'facebook'
+    | 'googlechat'
+    | 'googlechat_old'
+    | 'imessage';
+
+type DetectResult = { handler: ImportHandler; zip?: JSZip };
+
+type ImportHandler = {
+    type: ImportType;
+    requiresZip?: boolean;
+    detect: (file: File, zip?: JSZip) => Promise<boolean> | boolean;
+    parse: (file: File, chatId: string, zip?: JSZip) => ReturnType<typeof parseWhatsAppZip>;
 };
+
+const HANDLERS: ImportHandler[] = [
+    {
+        type: 'imessage',
+        detect: async (file) => {
+            if (!file.name.toLowerCase().endsWith('.json')) return false;
+            const text = await file.text();
+            try {
+                const parsed = JSON.parse(text);
+                return Boolean(parsed && Array.isArray(parsed.messages) && parsed.messages.some((m: Record<string, unknown>) => 'is_from_me' in m));
+            } catch {
+                return false;
+            }
+        },
+        parse: (file, chatId) => parseIMessageJson(file, chatId)
+    },
+    {
+        type: 'googlechat_old',
+        detect: (file) => file.name.toLowerCase().endsWith('.csv'),
+        parse: (file, chatId) => parseOldGoogleChatCsv(file, chatId)
+    },
+    {
+        type: 'whatsapp',
+        requiresZip: true,
+        detect: (_file, zip) => Boolean(zip?.file(/@.+\.csv$/i).length),
+        parse: (file, chatId, zip) => parseWhatsAppZip(file, chatId, zip)
+    },
+    {
+        type: 'gmail',
+        requiresZip: true,
+        detect: (_file, zip) => Boolean(zip?.file(/emails\.csv$/i).length),
+        parse: (file, chatId, zip) => parseGmailZip(file, chatId, zip)
+    },
+    {
+        type: 'instagram',
+        requiresZip: true,
+        detect: async (_file, zip) => {
+            const messageFiles = zip?.file(/message_\d+\.html$/i) ?? [];
+            if (!messageFiles.length) return false;
+            const sample = await messageFiles[0].async('string');
+            return sample.includes('Instagram-Logo') || sample.includes('instagram.com');
+        },
+        parse: (file, chatId, zip) => parseInstagramZip(file, chatId, zip)
+    },
+    {
+        type: 'facebook',
+        requiresZip: true,
+        detect: (_file, zip) => Boolean(zip?.file(/message_\d+\.html$/i).length),
+        parse: (file, chatId, zip) => parseFacebookZip(file, chatId, zip)
+    },
+    {
+        type: 'googlechat',
+        requiresZip: true,
+        detect: (_file, zip) => Boolean(zip?.file(/messages\.json$/i).length),
+        parse: (file, chatId, zip) => parseGoogleChatZip(file, chatId, zip)
+    }
+];
 
 export function ImportPage() {
     const [isDragging, setIsDragging] = useState(false);
@@ -45,15 +116,46 @@ export function ImportPage() {
         }
     };
 
+    const detectImportType = async (file: File): Promise<DetectResult | null> => {
+        const isZip = file.name.toLowerCase().endsWith('.zip');
+        let zip: JSZip | undefined;
+
+        for (const handler of HANDLERS) {
+            if (handler.requiresZip && !isZip) {
+                continue;
+            }
+            if (handler.requiresZip && !zip) {
+                try {
+                    zip = await JSZip.loadAsync(file);
+                } catch {
+                    return null;
+                }
+            }
+            const matched = await handler.detect(file, zip);
+            if (matched) {
+                return { handler, zip };
+            }
+        }
+
+        return null;
+    };
+
     const handleFile = async (file: File) => {
         setImportStatus('processing');
         setErrorMessage('');
 
         try {
-            // Create/Ensure chat record exists
-            await saveChat(TARGET_CHAT);
-
-            const result = await parseWhatsAppZip(file, TARGET_CHAT_ID);
+            const detected = await detectImportType(file);
+            if (!detected) {
+                if (file.name.toLowerCase().endsWith('.zip')) {
+                    const zip = await JSZip.loadAsync(file);
+                    const names = Object.keys(zip.files).slice(0, 20).join(', ');
+                    throw new Error(`Unsupported import file format. Zip entries: ${names}`);
+                }
+                throw new Error('Unsupported import file format.');
+            }
+            const { handler, zip } = detected;
+            const result = await handler.parse(file, TARGET_CHAT_ID, zip);
             const importedCount = await importMessages(result.messages);
 
             setStats({

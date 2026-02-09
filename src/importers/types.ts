@@ -5,9 +5,3 @@ export interface ParseResult {
     errors: string[];
     logs: string[];
 }
-
-export interface Importer {
-    name: string;
-    accepts: (file: File) => boolean;
-    parse: (file: File, chatId: string) => Promise<ParseResult>;
-}
