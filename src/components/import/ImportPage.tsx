@@ -4,12 +4,13 @@ import { Upload, CheckCircle, AlertCircle } from 'lucide-react';
 import JSZip from 'jszip';
 import { parseWhatsAppZip } from '../../importers/whatsapp/parser';
 import { parseFacebookZip, parseInstagramZip } from '../../importers/facebook/parser';
+import { parseFacebookPostsZip } from '../../importers/facebook/posts';
 import { parseGoogleChatZip } from '../../importers/googlechat/parser';
 import { parseOldGoogleChatCsv } from '../../importers/googlechat/oldCsv';
 import { parseIMessageJson } from '../../importers/imessage/parser';
 import { parseGmailZip } from '../../importers/gmail/parser';
-import { importMessages } from '../../store/db';
-import { TARGET_CHAT, TARGET_CHAT_ID } from '../../constants/chat';
+import { importMessages, importPosts } from '../../store/db';
+import { TARGET_CHAT_ID } from '../../constants/chat';
 import styles from './ImportPage.module.css';
 
 type ImportType =
@@ -17,17 +18,25 @@ type ImportType =
     | 'gmail'
     | 'instagram'
     | 'facebook'
+    | 'facebook_posts'
     | 'googlechat'
     | 'googlechat_old'
     | 'imessage';
 
 type DetectResult = { handler: ImportHandler; zip?: JSZip };
 
+type ImportResult =
+    | Awaited<ReturnType<typeof parseWhatsAppZip>>
+    | Awaited<ReturnType<typeof parseFacebookPostsZip>>;
+
+const isPostsResult = (result: ImportResult): result is Awaited<ReturnType<typeof parseFacebookPostsZip>> =>
+    'posts' in result;
+
 type ImportHandler = {
     type: ImportType;
     requiresZip?: boolean;
     detect: (file: File, zip?: JSZip) => Promise<boolean> | boolean;
-    parse: (file: File, chatId: string, zip?: JSZip) => ReturnType<typeof parseWhatsAppZip>;
+    parse: (file: File, chatId: string, zip?: JSZip) => Promise<ImportResult>;
 };
 
 const HANDLERS: ImportHandler[] = [
@@ -72,6 +81,12 @@ const HANDLERS: ImportHandler[] = [
             return sample.includes('Instagram-Logo') || sample.includes('instagram.com');
         },
         parse: (file, chatId, zip) => parseInstagramZip(file, chatId, zip)
+    },
+    {
+        type: 'facebook_posts',
+        requiresZip: true,
+        detect: (_file, zip) => Boolean(zip?.file(/posts\/your_posts__check_ins__photos_and_videos_\d+\.json$/i).length),
+        parse: (file, _chatId, zip) => parseFacebookPostsZip(file, zip)
     },
     {
         type: 'facebook',
@@ -156,13 +171,22 @@ export function ImportPage() {
             }
             const { handler, zip } = detected;
             const result = await handler.parse(file, TARGET_CHAT_ID, zip);
-            const importedCount = await importMessages(result.messages);
+            let importedCount = 0;
+            const totalCount = isPostsResult(result)
+                ? result.posts.length
+                : result.messages.length;
+            const combinedLogs: string[] = result.logs || [];
+            if (isPostsResult(result)) {
+                importedCount = await importPosts(result.posts);
+            } else {
+                importedCount = await importMessages(result.messages);
+            }
 
             setStats({
-                total: result.messages.length,
+                total: totalCount,
                 imported: importedCount
             });
-            setLogs(result.logs || []);
+            setLogs(combinedLogs);
             setImportStatus('success');
 
         } catch (error: unknown) {
@@ -175,7 +199,7 @@ export function ImportPage() {
 
     return (
         <div className={styles.page}>
-            <h1 className={styles.title}>Import Chat</h1>
+            <h1 className={styles.title}>Import</h1>
 
             <div
                 onDragOver={setDragging(true)}
@@ -194,10 +218,10 @@ export function ImportPage() {
 
                 <Upload size={48} color="var(--color-text-secondary)" style={{ marginBottom: '16px' }} />
                 <p className={styles.dropzoneText}>
-                    Click or drag WhatsApp export (.zip) here
+                    Click or drag an export (.zip) here
                 </p>
                 <p className={styles.dropzoneSubtext}>
-                    Supports text and media attachments
+                    Supports chats, posts, and media attachments
                 </p>
             </div>
 
@@ -212,7 +236,7 @@ export function ImportPage() {
                     <CheckCircle size={24} color="var(--color-primary)" className={styles.statusIcon} />
                     <div>
                         <h3 style={{ marginBottom: '4px' }}>Import Successful</h3>
-                        <p>Processed {stats.total} messages. Imported {stats.imported} new messages ({stats.total - stats.imported} duplicates skipped).</p>
+                        <p>Processed {stats.total} items. Imported {stats.imported} new items ({stats.total - stats.imported} duplicates skipped).</p>
                     </div>
                 </div>
             )}
@@ -230,11 +254,9 @@ export function ImportPage() {
             <div className={styles.instructions}>
                 <h3 style={{ marginBottom: '10px' }}>Instructions</h3>
                 <ul className={styles.instructionsList}>
-                    <li>Open WhatsApp on your phone.</li>
-                    <li>Go to the chat you want to export.</li>
-                    <li>Tap on the contact info &gt; Export Chat.</li>
-                    <li>Select "Attach Media".</li>
-                    <li>Save the ZIP file and upload it here.</li>
+                    <li>Download your export ZIP from the service.</li>
+                    <li>Keep the media files included if available.</li>
+                    <li>Upload the ZIP file here.</li>
                 </ul>
             </div>
 

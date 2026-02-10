@@ -1,6 +1,7 @@
 import { openDB } from 'idb';
 import type { DBSchema, IDBPDatabase } from 'idb';
 import type { Message } from '../types/chat';
+import type { PostRecord, PostMedia } from '../types/posts';
 
 interface LucikoDB extends DBSchema {
     messages: {
@@ -10,6 +11,14 @@ interface LucikoDB extends DBSchema {
             'chatId': string;
             'externalId': string;
             'chatId_timestamp': [string, Date];
+        };
+    };
+    posts: {
+        key: string;
+        value: PostRecord;
+        indexes: {
+            'externalId': string;
+            'timestamp': number;
         };
     };
     attachments: {
@@ -23,7 +32,7 @@ interface LucikoDB extends DBSchema {
 }
 
 const DB_NAME = 'luciko-db';
-const DB_VERSION = 6; // Remove chats store
+const DB_VERSION = 7; // Add posts store
 
 let dbPromise: Promise<IDBPDatabase<LucikoDB>>;
 
@@ -45,14 +54,27 @@ export function initDB() {
                         messageStore.createIndex('chatId_timestamp', ['chatId', 'timestamp'], { unique: false });
                     }
                 }
+                if (!db.objectStoreNames.contains('posts')) {
+                    const postStore = db.createObjectStore('posts', { keyPath: 'id' });
+                    postStore.createIndex('externalId', 'externalId', { unique: false });
+                    postStore.createIndex('timestamp', 'timestamp', { unique: false });
+                } else if (oldVersion < 7) {
+                    const postStore = transaction.objectStore('posts');
+                    if (!postStore.indexNames.contains('externalId')) {
+                        postStore.createIndex('externalId', 'externalId', { unique: false });
+                    }
+                    if (!postStore.indexNames.contains('timestamp')) {
+                        postStore.createIndex('timestamp', 'timestamp', { unique: false });
+                    }
+                }
                 if (!db.objectStoreNames.contains('attachments')) {
                     db.createObjectStore('attachments');
                 }
                 if (!db.objectStoreNames.contains('bookmarks')) {
                     db.createObjectStore('bookmarks', { keyPath: 'chatId' });
                 }
-                if (oldVersion < 6 && db.objectStoreNames.contains('chats')) {
-                    db.deleteObjectStore('chats');
+                if (oldVersion < 6 && Array.from(db.objectStoreNames as unknown as string[]).includes('chats')) {
+                    db.deleteObjectStore('chats' as never);
                 }
             },
         });
@@ -84,6 +106,20 @@ export async function getMessagesCount(chatId: string): Promise<number> {
     const db = await initDB();
     return db.countFromIndex('messages', 'chatId', chatId);
 }
+
+export async function getPosts(): Promise<PostRecord[]> {
+    const db = await initDB();
+    const tx = db.transaction('posts', 'readonly');
+    const index = tx.store.index('timestamp');
+    const posts: PostRecord[] = [];
+    let cursor = await index.openCursor(null, 'next');
+    while (cursor) {
+        posts.push(cursor.value);
+        cursor = await cursor.continue();
+    }
+    return posts;
+}
+
 
 export async function getMessageOffsetInChat(chatId: string, messageId: string): Promise<number | null> {
     const db = await initDB();
@@ -296,3 +332,140 @@ export async function importMessages(messages: Message[]): Promise<number> {
     await tx.done;
     return importedCount;
 }
+
+/**
+ * Imports posts, skipping duplicates based on externalId.
+ * Returns the number of new posts imported.
+ */
+export async function importPosts(posts: PostRecord[]): Promise<number> {
+    const db = await initDB();
+    let importedCount = 0;
+
+    const hashBlob = async (blob: Blob): Promise<string> => {
+        if (!globalThis.crypto?.subtle) {
+            return '';
+        }
+        const buffer = await blob.arrayBuffer();
+        const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', buffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    };
+
+    const buildMediaKey = async (media: PostMedia) => {
+        if (media.contentHash) {
+            return `hash:${media.contentHash}`;
+        }
+        if (media.file) {
+            const hash = await hashBlob(media.file);
+            if (hash) {
+                media.contentHash = hash;
+                return `hash:${hash}`;
+            }
+        }
+        if (media.sourceUri) {
+            return `uri:${media.sourceUri}`;
+        }
+        const mime = media.mimeType ?? '';
+        const size = media.size ?? '';
+        return `meta:${media.fileName}:${mime}:${size}`;
+    };
+
+    const dedupeMedia = async (media?: PostMedia[]) => {
+        if (!media || media.length === 0) return undefined;
+        const seen = new Map<string, PostMedia>();
+        for (const item of media) {
+            const key = await buildMediaKey(item);
+            if (!seen.has(key)) {
+                const next = { ...item, id: key };
+                seen.set(key, next);
+            }
+        }
+        return Array.from(seen.values());
+    };
+
+    const normalizedPosts: PostRecord[] = [];
+    for (const post of posts) {
+        if (post.media && post.media.length > 0) {
+            post.media = await dedupeMedia(post.media);
+        }
+        normalizedPosts.push(post);
+    }
+
+    const tx = db.transaction(['posts', 'attachments'], 'readwrite');
+    const postStore = tx.objectStore('posts');
+    const attachmentStore = tx.objectStore('attachments');
+    const externalIdIndex = postStore.index('externalId');
+
+    for (const post of normalizedPosts) {
+        let existing: PostRecord | undefined;
+        if (post.externalId) {
+            existing = await externalIdIndex.get(post.externalId);
+        }
+
+        if (!existing) {
+            if (post.media) {
+                for (const media of post.media) {
+                    if (media.file) {
+                        await attachmentStore.put(media.file, media.id);
+                    }
+                }
+            }
+
+            const postToStore: PostRecord = { ...post };
+            if (postToStore.media) {
+                postToStore.media = postToStore.media.map((media) => ({ ...media, file: undefined }));
+            }
+            await postStore.put(postToStore);
+            importedCount++;
+        } else {
+            let wasUpdated = false;
+            if (post.media && post.media.length > 0) {
+                const updatedMedia = [...(existing.media || [])];
+                const existingById = new Map(updatedMedia.map((media) => [media.id, media]));
+
+                for (const media of post.media) {
+                    const current = existingById.get(media.id);
+                    if (!current) {
+                        if (media.file) {
+                            await attachmentStore.put(media.file, media.id);
+                        }
+                        updatedMedia.push({ ...media, file: undefined });
+                        wasUpdated = true;
+                    } else if (media.file) {
+                        await attachmentStore.put(media.file, current.id);
+                    }
+                }
+
+                if (wasUpdated) {
+                    existing.media = updatedMedia;
+                }
+            }
+
+            if (!existing.text && post.text) {
+                existing.text = post.text;
+                wasUpdated = true;
+            }
+            if (!existing.activity && post.activity) {
+                existing.activity = post.activity;
+                wasUpdated = true;
+            }
+            if (!existing.linkUrl && post.linkUrl) {
+                existing.linkUrl = post.linkUrl;
+                wasUpdated = true;
+            }
+
+            if (wasUpdated) {
+                await postStore.put(existing);
+                importedCount++;
+            }
+        }
+    }
+
+    await tx.done;
+    return importedCount;
+}
+
+/**
+ * Imports post comments, skipping duplicates based on externalId.
+ * Returns the number of new comments imported.
+ */

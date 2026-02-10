@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import type { Message } from '../../types/chat';
 import { ChatArea } from './ChatArea';
 import { ImportPage } from '../import/ImportPage';
+import { PostsPage } from '../posts/PostsPage';
 import { getMessageOffsetInChat, getMessagesPaginated, getMessagesCount } from '../../store/db';
-import { Upload, MessageSquare } from 'lucide-react';
+import { Upload, MessageSquare, Newspaper } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 
@@ -12,7 +13,7 @@ const PAGE_SIZE = 100;
 export function AppLayout() {
     const activeChat = TARGET_CHAT;
     const [messages, setMessages] = useState<Message[]>([]);
-    const [currentView, setCurrentView] = useState<'chat' | 'import'>('chat');
+    const [currentView, setCurrentView] = useState<'chat' | 'import' | 'posts'>('chat');
     const [offset, setOffset] = useState(0);
     const [hasOlder, setHasOlder] = useState(false);
     const [hasNewer, setHasNewer] = useState(false);
@@ -160,6 +161,12 @@ export function AppLayout() {
                         <MessageSquare size={20} /> Chat
                     </button>
                     <button
+                        onClick={() => setCurrentView('posts')}
+                        className={`${styles.navButton} ${currentView === 'posts' ? styles.navButtonActive : ''}`}
+                    >
+                        <Newspaper size={20} /> Posts
+                    </button>
+                    <button
                         onClick={() => setCurrentView('import')}
                         className={`${styles.navButton} ${currentView === 'import' ? styles.navButtonActive : ''}`}
                     >
@@ -181,8 +188,10 @@ export function AppLayout() {
                         onJumpToLatest={loadLatestMessages}
                         onJumpToBookmark={jumpToMessage}
                     />
-                ) : (
+                ) : currentView === 'import' ? (
                     <ImportPage />
+                ) : (
+                    <PostsPage />
                 )}
             </div>
         </div>

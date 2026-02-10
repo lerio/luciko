@@ -1,0 +1,211 @@
+.page {
+  padding: 0 0 40px;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.header {
+  width: 100%;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--header-height);
+  padding: 10px 16px;
+  background-color: var(--color-bg-app);
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.headerInfo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.state {
+  padding: 40px;
+  text-align: center;
+  color: var(--color-text-secondary);
+  width: min(820px, 100%);
+}
+
+.feed {
+  display: grid;
+  gap: 24px;
+  width: min(820px, 100%);
+  padding: 32px 24px 0;
+}
+
+.card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px 22px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.cardHeader {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  overflow: hidden;
+  background-color: #ccc;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatarImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+.avatarFallback {
+  font-size: 16px;
+  color: #fff;
+}
+
+.bookmarkButton {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.bookmarkButton:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--color-text-primary);
+}
+
+.bookmarkButtonActive {
+  background: #008069;
+  color: #ffffff;
+  border-color: #008069;
+}
+
+.bookmarkButtonActive:hover {
+  background: #008069;
+}
+
+.bookmarkButtonActive svg {
+  color: #ffffff;
+  stroke: #ffffff;
+}
+
+.scrollToBookmarkButton {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #ffffff;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.scrollToBookmarkButton:hover {
+  background: #f6f6f6;
+}
+
+.meta {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.activity {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.text {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mediaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.mediaSingle {
+  grid-template-columns: 1fr;
+}
+
+.mediaItem {
+  width: 100%;
+  border-radius: 12px;
+  background: #f1f5f9;
+  max-height: 520px;
+  object-fit: cover;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-primary);
+  font-size: 14px;
+  text-decoration: none;
+  word-break: break-all;
+  max-width: 100%;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 900px) {
+  .page {
+    padding: 0 0 28px;
+  }
+
+  .feed {
+    max-width: 100%;
+  }
+
+  .title {
+    font-size: 24px;
+  }
+
+  .card {
+    padding: 16px 16px;
+  }
+}
