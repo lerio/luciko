@@ -75,6 +75,7 @@
   display: flex;
   flex-direction: column;
   margin-bottom: 12px;
+  scroll-margin-top: 45px;
 }
 
 .messageContainerWithReactions {
@@ -91,7 +92,7 @@
 
 .messageRow {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 6px;
 }
 
@@ -111,9 +112,14 @@
   position: relative;
 }
 
+.sideControls {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
 .sourceBadge {
-  position: absolute;
-  top: -8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -127,18 +133,10 @@
 }
 
 .sourceLogo {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   object-fit: contain;
   display: block;
-}
-
-.sourceBadgeMe {
-  right: -8px;
-}
-
-.sourceBadgeOther {
-  left: -8px;
 }
 
 .sourceBadge_whatsapp {
@@ -284,6 +282,27 @@
 
 .bookmarkButton.bookmarkButtonActive:hover {
   background: #008069;
+}
+
+.actionStack {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hideButtonActive {
+  background: #4b5563;
+  color: #ffffff;
+  border-color: #4b5563;
+}
+
+.hideButtonActive:hover {
+  background: #4b5563;
+}
+
+.hideButtonActive svg {
+  color: #ffffff;
+  stroke: #ffffff;
 }
 
 .reactionsRow {

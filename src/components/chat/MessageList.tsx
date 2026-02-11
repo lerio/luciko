@@ -8,10 +8,12 @@ interface MessageListProps {
     messages: Message[];
     currentUserId: string;
     bookmarkedMessageId: string | null;
+    hiddenMessageIds: Set<string>;
     onBookmark: (messageId: string) => void;
+    onToggleHidden: (messageId: string) => void;
 }
 
-export function MessageList({ messages, currentUserId, bookmarkedMessageId, onBookmark }: MessageListProps) {
+export function MessageList({ messages, currentUserId, bookmarkedMessageId, hiddenMessageIds, onBookmark, onToggleHidden }: MessageListProps) {
     const { nodes } = messages.reduce(
         (acc, msg) => {
             const isNewDay = !acc.lastDate || !isSameDay(acc.lastDate, msg.timestamp);
@@ -29,7 +31,9 @@ export function MessageList({ messages, currentUserId, bookmarkedMessageId, onBo
                     message={msg}
                     isMe={msg.senderId === currentUserId}
                     isBookmarked={bookmarkedMessageId === msg.id}
+                    isHidden={hiddenMessageIds.has(msg.id)}
                     onBookmark={onBookmark}
+                    onToggleHidden={onToggleHidden}
                 />
             );
 

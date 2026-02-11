@@ -1,6 +1,7 @@
 .page {
   padding: 0 0 40px;
   height: 100%;
+  width: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -13,11 +14,12 @@
   position: sticky;
   top: 0;
   z-index: 10;
-  height: var(--header-height);
-  padding: 10px 16px;
+  height: 60px;
+  padding: 16px 16px;
   background-color: var(--color-bg-app);
   display: flex;
   align-items: center;
+  justify-content: space-between;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -25,6 +27,15 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
 }
 
 .title {
@@ -37,14 +48,22 @@
   padding: 40px;
   text-align: center;
   color: var(--color-text-secondary);
-  width: min(820px, 100%);
+  width: min(800px, 100%);
+  margin: 0 auto;
 }
 
 .feed {
   display: grid;
   gap: 24px;
-  width: min(820px, 100%);
-  padding: 32px 24px 0;
+  width: min(800px, 100%);
+  padding: 0 24px 0;
+  margin: 0 auto;
+}
+
+.sentinel {
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .card {
@@ -63,6 +82,13 @@
   display: flex;
   gap: 12px;
   align-items: center;
+}
+
+.postActions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
 }
 
 .avatar {
@@ -90,7 +116,6 @@
 }
 
 .bookmarkButton {
-  margin-left: auto;
   border: none;
   background: transparent;
   color: var(--color-text-secondary);
@@ -121,6 +146,16 @@
 .bookmarkButtonActive svg {
   color: #ffffff;
   stroke: #ffffff;
+}
+
+.hideButtonActive {
+  background: #4b5563;
+  color: #ffffff;
+  border-color: #4b5563;
+}
+
+.hideButtonActive:hover {
+  background: #4b5563;
 }
 
 .scrollToBookmarkButton {
@@ -198,7 +233,8 @@
   }
 
   .feed {
-    max-width: 100%;
+    width: 100%;
+    padding: 0 3% 0;
   }
 
   .title {

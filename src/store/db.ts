@@ -21,6 +21,13 @@ interface LucikoDB extends DBSchema {
             'timestamp': number;
         };
     };
+    hiddenItems: {
+        key: string;
+        value: { key: string; scope: string; itemId: string };
+        indexes: {
+            'scope': string;
+        };
+    };
     attachments: {
         key: string;
         value: Blob;
@@ -32,7 +39,7 @@ interface LucikoDB extends DBSchema {
 }
 
 const DB_NAME = 'luciko-db';
-const DB_VERSION = 7; // Add posts store
+const DB_VERSION = 8; // Add hidden items store
 
 let dbPromise: Promise<IDBPDatabase<LucikoDB>>;
 
@@ -66,6 +73,10 @@ export function initDB() {
                     if (!postStore.indexNames.contains('timestamp')) {
                         postStore.createIndex('timestamp', 'timestamp', { unique: false });
                     }
+                }
+                if (!db.objectStoreNames.contains('hiddenItems')) {
+                    const hiddenStore = db.createObjectStore('hiddenItems', { keyPath: 'key' });
+                    hiddenStore.createIndex('scope', 'scope', { unique: false });
                 }
                 if (!db.objectStoreNames.contains('attachments')) {
                     db.createObjectStore('attachments');
@@ -119,6 +130,72 @@ export async function getPosts(): Promise<PostRecord[]> {
     }
     return posts;
 }
+
+export async function getPostsCount(): Promise<number> {
+    const db = await initDB();
+    return db.count('posts');
+}
+
+export async function getPostOffset(postId: string): Promise<number | null> {
+    const db = await initDB();
+    const tx = db.transaction('posts', 'readonly');
+    const index = tx.store.index('timestamp');
+    let cursor = await index.openCursor();
+    let offset = 0;
+
+    while (cursor) {
+        if (cursor.value.id === postId) {
+            return offset;
+        }
+        offset += 1;
+        cursor = await cursor.continue();
+    }
+
+    return null;
+}
+
+export async function getPostsPaginated(limit: number, offset: number): Promise<PostRecord[]> {
+    const db = await initDB();
+    const tx = db.transaction('posts', 'readonly');
+    const index = tx.store.index('timestamp');
+    let cursor = await index.openCursor();
+
+    if (offset > 0 && cursor) {
+        cursor = await cursor.advance(offset);
+    }
+
+    const posts: PostRecord[] = [];
+    while (cursor && posts.length < limit) {
+        posts.push(cursor.value);
+        cursor = await cursor.continue();
+    }
+
+    return posts;
+}
+
+export async function getHiddenItems(scope: string): Promise<Set<string>> {
+    const db = await initDB();
+    const tx = db.transaction('hiddenItems', 'readonly');
+    const index = tx.store.index('scope');
+    const keys: string[] = [];
+    let cursor = await index.openCursor(scope);
+    while (cursor) {
+        keys.push(cursor.value.itemId);
+        cursor = await cursor.continue();
+    }
+    return new Set(keys);
+}
+
+export async function setHiddenItem(scope: string, itemId: string, hidden: boolean): Promise<void> {
+    const db = await initDB();
+    const key = `${scope}:${itemId}`;
+    if (hidden) {
+        await db.put('hiddenItems', { key, scope, itemId });
+    } else {
+        await db.delete('hiddenItems', key);
+    }
+}
+
 
 
 export async function getMessageOffsetInChat(chatId: string, messageId: string): Promise<number | null> {
@@ -464,6 +541,7 @@ export async function importPosts(posts: PostRecord[]): Promise<number> {
     await tx.done;
     return importedCount;
 }
+
 
 /**
  * Imports post comments, skipping duplicates based on externalId.

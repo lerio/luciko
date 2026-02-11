@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { format } from "date-fns";
-import { Bookmark, Check, CheckCheck, Download } from "lucide-react";
+import { Bookmark, Check, CheckCheck, Download, EyeOff } from "lucide-react";
 import { getAttachment } from "../../store/db";
 import type { Attachment, Message } from "../../types/chat";
 import styles from "./MessageBubble.module.css";
 import whatsappLogo from "../../assets/whatsapp.png";
-import facebookLogo from "../../assets/facebook-messenger.png";
+import facebookLogo from "../../assets/facebook-messenger.svg";
 import instagramLogo from "../../assets/instagram.png";
 import googleChatLogo from "../../assets/google-chat.png";
 import imessageLogo from "../../assets/imessage.png";
@@ -15,7 +15,9 @@ interface MessageBubbleProps {
   message: Message;
   isMe: boolean;
   isBookmarked: boolean;
+  isHidden: boolean;
   onBookmark: (messageId: string) => void;
+  onToggleHidden: (messageId: string) => void;
 }
 
 interface AttachmentPreviewProps {
@@ -58,7 +60,9 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
 
   if (isLoading) {
     return (
-      <div className={`${styles.attachmentStatus} ${styles.attachmentStatusLoading}`}>
+      <div
+        className={`${styles.attachmentStatus} ${styles.attachmentStatusLoading}`}
+      >
         Loading attachment...
       </div>
     );
@@ -66,7 +70,9 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
 
   if (!blobUrl) {
     return (
-      <div className={`${styles.attachmentStatus} ${styles.attachmentStatusError}`}>
+      <div
+        className={`${styles.attachmentStatus} ${styles.attachmentStatusError}`}
+      >
         Error loading file
       </div>
     );
@@ -84,11 +90,7 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
         );
       case "video":
         return (
-          <video
-            src={blobUrl}
-            controls
-            className={styles.attachmentMedia}
-          />
+          <video src={blobUrl} controls className={styles.attachmentMedia} />
         );
       case "audio":
         return (
@@ -125,12 +127,17 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
     }
   })();
 
-  return (
-    <div className={styles.attachmentWrapper}>{attachmentContent}</div>
-  );
+  return <div className={styles.attachmentWrapper}>{attachmentContent}</div>;
 }
 
-export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  isMe,
+  isBookmarked,
+  isHidden,
+  onBookmark,
+  onToggleHidden,
+}: MessageBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const shouldTruncate = message.content.length > TRUNCATE_LIMIT && !isExpanded;
   const displayContent = shouldTruncate
@@ -177,7 +184,11 @@ export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: Messa
                 </a>
               );
             }
-            return <span key={`${keyPrefix}-text-${lineIndex}-${partIndex}`}>{part}</span>;
+            return (
+              <span key={`${keyPrefix}-text-${lineIndex}-${partIndex}`}>
+                {part}
+              </span>
+            );
           })}
           {lineIndex < lines.length - 1 && <br />}
         </span>
@@ -185,8 +196,14 @@ export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: Messa
 
     if (isGmail) {
       const separatorIndex = content.indexOf("\n\n");
-      const subject = separatorIndex >= 0 ? content.slice(0, separatorIndex) : content.split("\n")[0] || "";
-      const body = separatorIndex >= 0 ? content.slice(separatorIndex + 2) : content.split("\n").slice(1).join("\n");
+      const subject =
+        separatorIndex >= 0
+          ? content.slice(0, separatorIndex)
+          : content.split("\n")[0] || "";
+      const body =
+        separatorIndex >= 0
+          ? content.slice(separatorIndex + 2)
+          : content.split("\n").slice(1).join("\n");
       const bodyLines = body.split("\n");
 
       return (
@@ -206,43 +223,59 @@ export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: Messa
   return (
     <div
       id={`message-${message.id}`}
-      className={`${styles.messageContainer} ${message.reactions && message.reactions.length > 0 ? styles.messageContainerWithReactions : ''} ${isMe ? styles.messageContainerMe : styles.messageContainerOther}`}
+      className={`${styles.messageContainer} ${message.reactions && message.reactions.length > 0 ? styles.messageContainerWithReactions : ""} ${isMe ? styles.messageContainerMe : styles.messageContainerOther}`}
     >
-      <div className={`${styles.messageRow} ${isMe ? styles.messageRowMe : styles.messageRowOther}`}>
+      <div
+        className={`${styles.messageRow} ${isMe ? styles.messageRowMe : styles.messageRowOther}`}
+      >
         {!isMe && (
-          <button
-            type="button"
-            className={`${styles.bookmarkButton} ${isBookmarked ? styles.bookmarkButtonActive : ""}`}
-            onClick={() => onBookmark(message.id)}
-            aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
-          >
-            <Bookmark size={14} />
-          </button>
+          <div className={styles.sideControls}>
+            {sourceLogo && (
+              <span
+                className={`${styles.sourceBadge} ${styles[`sourceBadge_${message.source ?? "unknown"}`]}`}
+              >
+                <img
+                  src={sourceLogo.src}
+                  alt={`${sourceLogo.alt} logo`}
+                  className={styles.sourceLogo}
+                />
+              </span>
+            )}
+            <div className={styles.actionStack}>
+              <button
+                type="button"
+                className={`${styles.bookmarkButton} ${isBookmarked ? styles.bookmarkButtonActive : ""}`}
+                onClick={() => onBookmark(message.id)}
+                aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
+              >
+                <Bookmark size={14} />
+              </button>
+              <button
+                type="button"
+                className={`${styles.bookmarkButton} ${isHidden ? styles.hideButtonActive : ""}`}
+                onClick={() => onToggleHidden(message.id)}
+                aria-label={isHidden ? "Unhide message" : "Hide message"}
+              >
+                <EyeOff size={14} />
+              </button>
+            </div>
+          </div>
         )}
         <div
           className={`${styles.bubbleBase} ${isMe ? styles.bubbleMe : styles.bubbleOther}`}
         >
-          {sourceLogo && (
-            <span
-              className={`${styles.sourceBadge} ${styles[`sourceBadge_${message.source ?? "unknown"}`]} ${isMe ? styles.sourceBadgeMe : styles.sourceBadgeOther}`}
-            >
-              <img
-                src={sourceLogo.src}
-                alt={`${sourceLogo.alt} logo`}
-                className={styles.sourceLogo}
-              />
-            </span>
-          )}
           <div className={styles.messageContent}>
             {/* Sender Name (if not me, or always if debugging) */}
             {!isMe && (
-              <div className={styles.senderName}>
-                {message.senderId}
-              </div>
+              <div className={styles.senderName}>{message.senderId}</div>
             )}
             {message.quotedText && (
-              <div className={`${styles.replyBubble} ${isMe ? styles.replyBubbleMe : styles.replyBubbleOther}`}>
-                <div className={styles.replyLabel}>{message.quotedSender || 'Reply'}</div>
+              <div
+                className={`${styles.replyBubble} ${isMe ? styles.replyBubbleMe : styles.replyBubbleOther}`}
+              >
+                <div className={styles.replyLabel}>
+                  {message.quotedSender || "Reply"}
+                </div>
                 <div className={styles.replyText}>{message.quotedText}</div>
               </div>
             )}
@@ -262,10 +295,16 @@ export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: Messa
             )}
           </div>
           <div className={styles.metaRow}>
-            <span className={styles.timestamp}>{format(message.timestamp, "HH:mm")}</span>
+            <span className={styles.timestamp}>
+              {format(message.timestamp, "HH:mm")}
+            </span>
             {isMe && (
               <span
-                className={message.status === "read" ? styles.statusRead : styles.statusSent}
+                className={
+                  message.status === "read"
+                    ? styles.statusRead
+                    : styles.statusSent
+                }
               >
                 {message.status === "read" ? (
                   <CheckCheck size={14} />
@@ -276,12 +315,16 @@ export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: Messa
             )}
           </div>
           {message.reactions && message.reactions.length > 0 && (
-            <div className={`${styles.reactionsRow} ${isMe ? styles.reactionsRowMe : styles.reactionsRowOther}`}>
+            <div
+              className={`${styles.reactionsRow} ${isMe ? styles.reactionsRowMe : styles.reactionsRowOther}`}
+            >
               {message.reactions.map((reaction) => (
                 <div key={reaction.emoji} className={styles.reactionChip}>
                   <span className={styles.reactionEmoji}>{reaction.emoji}</span>
                   {reaction.count > 1 && (
-                    <span className={styles.reactionCount}>{reaction.count}</span>
+                    <span className={styles.reactionCount}>
+                      {reaction.count}
+                    </span>
                   )}
                 </div>
               ))}
@@ -289,14 +332,37 @@ export function MessageBubble({ message, isMe, isBookmarked, onBookmark }: Messa
           )}
         </div>
         {isMe && (
-          <button
-            type="button"
-            className={`${styles.bookmarkButton} ${isBookmarked ? styles.bookmarkButtonActive : ""}`}
-            onClick={() => onBookmark(message.id)}
-            aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
-          >
-            <Bookmark size={14} />
-          </button>
+          <div className={styles.sideControls}>
+            {sourceLogo && (
+              <span
+                className={`${styles.sourceBadge} ${styles[`sourceBadge_${message.source ?? "unknown"}`]}`}
+              >
+                <img
+                  src={sourceLogo.src}
+                  alt={`${sourceLogo.alt} logo`}
+                  className={styles.sourceLogo}
+                />
+              </span>
+            )}
+            <div className={styles.actionStack}>
+              <button
+                type="button"
+                className={`${styles.bookmarkButton} ${isBookmarked ? styles.bookmarkButtonActive : ""}`}
+                onClick={() => onBookmark(message.id)}
+                aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
+              >
+                <Bookmark size={14} />
+              </button>
+              <button
+                type="button"
+                className={`${styles.bookmarkButton} ${isHidden ? styles.hideButtonActive : ""}`}
+                onClick={() => onToggleHidden(message.id)}
+                aria-label={isHidden ? "Unhide message" : "Hide message"}
+              >
+                <EyeOff size={14} />
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

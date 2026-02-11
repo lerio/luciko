@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Chat, Message } from "../../types/chat";
 import { MessageList } from "../chat/MessageList";
-import { Bookmark } from "lucide-react";
-import { getBookmark, setBookmark } from "../../store/db";
+import { Bookmark, EyeOff, Eye } from "lucide-react";
+import { getBookmark, setBookmark, getHiddenItems, setHiddenItem } from "../../store/db";
 import styles from "./ChatArea.module.css";
 
 interface ChatAreaProps {
@@ -26,6 +26,8 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   const [bookmarkedMessageId, setBookmarkedMessageId] = useState<string | null>(null);
   const [isBookmarkReady, setIsBookmarkReady] = useState(false);
   const [isBookmarkScrollPending, setIsBookmarkScrollPending] = useState(false);
+  const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(new Set());
+  const [showHidden, setShowHidden] = useState(false);
 
   const scrollToBottom = async () => {
     if (onJumpToLatest) {
@@ -66,7 +68,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     if (!bookmarkedMessageId) return;
     const target = document.getElementById(`message-${bookmarkedMessageId}`);
     if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
 
@@ -79,11 +81,14 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     }
   }, [bookmarkedMessageId, onJumpToBookmark]);
 
+
   useEffect(() => {
     let isActive = true;
     if (!activeChat?.id) {
       setBookmarkedMessageId(null);
       setIsBookmarkReady(false);
+      setHiddenMessageIds(new Set());
+      setShowHidden(false);
       return;
     }
 
@@ -113,6 +118,30 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   }, [activeChat?.id]);
 
   useEffect(() => {
+    let isActive = true;
+    if (!activeChat?.id) return;
+    const scope = `chat:${activeChat.id}`;
+
+    const load = async () => {
+      try {
+        const hidden = await getHiddenItems(scope);
+        if (isActive) {
+          setHiddenMessageIds(hidden);
+        }
+      } catch (error) {
+        if (isActive) {
+          console.warn("Failed to read hidden messages:", error);
+        }
+      }
+    };
+
+    load();
+    return () => {
+      isActive = false;
+    };
+  }, [activeChat?.id]);
+
+  useEffect(() => {
     if (!activeChat?.id) return;
     if (!isBookmarkReady) return;
 
@@ -131,9 +160,32 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     if (!isBookmarkScrollPending || !bookmarkedMessageId) return;
     const target = document.getElementById(`message-${bookmarkedMessageId}`);
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
     setIsBookmarkScrollPending(false);
   }, [bookmarkedMessageId, isBookmarkScrollPending, messages.length]);
+
+  const handleToggleHidden = useCallback(async (messageId: string) => {
+    if (!activeChat?.id) return;
+    const scope = `chat:${activeChat.id}`;
+    const next = new Set(hiddenMessageIds);
+    const isHidden = next.has(messageId);
+    if (isHidden) {
+      next.delete(messageId);
+    } else {
+      next.add(messageId);
+    }
+    setHiddenMessageIds(next);
+    try {
+      await setHiddenItem(scope, messageId, !isHidden);
+    } catch (error) {
+      console.warn("Failed to persist hidden message:", error);
+    }
+  }, [activeChat?.id, hiddenMessageIds]);
+
+  const visibleMessages = useMemo(
+    () => (showHidden ? messages : messages.filter((msg) => !hiddenMessageIds.has(msg.id))),
+    [messages, showHidden, hiddenMessageIds]
+  );
 
   useEffect(() => {
     if (!onLoadOlder || !hasOlder) return;
@@ -202,6 +254,8 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
             )}
           </div>
           <span style={{ fontWeight: "bold" }}>{activeChat.name}</span>
+        </div>
+        <div className={styles.headerActions}>
           {bookmarkedMessageId && (
             <button
               type="button"
@@ -212,6 +266,16 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
               <Bookmark size={16} />
             </button>
           )}
+          {hiddenMessageIds.size > 0 && (
+            <button
+              type="button"
+              className={styles.scrollToBookmarkButton}
+              onClick={() => setShowHidden((current) => !current)}
+              aria-label={showHidden ? "Hide hidden messages" : "Show hidden messages"}
+            >
+              {showHidden ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          )}
         </div>
       </div>
 
@@ -219,10 +283,12 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
         {/* Sentinel for infinite scroll (load older messages) */}
         <div ref={topSentinelRef} className={styles.sentinel} />
         <MessageList
-          messages={messages}
+          messages={visibleMessages}
           currentUserId={CURRENT_USER_ID}
           bookmarkedMessageId={bookmarkedMessageId}
           onBookmark={handleBookmark}
+          hiddenMessageIds={hiddenMessageIds}
+          onToggleHidden={handleToggleHidden}
         />
         {/* Sentinel for infinite scroll (load newer messages) */}
         <div ref={bottomSentinelRef} className={styles.sentinel} />
