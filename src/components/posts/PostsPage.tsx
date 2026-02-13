@@ -26,6 +26,7 @@ type Post = Omit<PostRecord, "media"> & {
 };
 
 const PAGE_SIZE = 60;
+const BOOKMARK_SCROLL_OFFSET = -70;
 
 const mojibakeScore = (value: string): number => {
   const controlMatches = value.match(/[\u0080-\u00bf]/g);
@@ -78,7 +79,6 @@ export function PostsPage() {
   const [totalCount, setTotalCount] = useState(0);
   const [hasOlder, setHasOlder] = useState(false);
   const [hasNewer, setHasNewer] = useState(false);
-  const [isFetching, setIsFetching] = useState(false);
   const [loadedCount, setLoadedCount] = useState(0);
   const [bookmarkedPostId, setBookmarkedPostId] = useState<string | null>(null);
   const [isBookmarkReady, setIsBookmarkReady] = useState(false);
@@ -129,7 +129,6 @@ export function PostsPage() {
   const loadInitialPosts = useCallback(async () => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
-    setIsFetching(true);
     try {
       const total = await getPostsCount();
       const start = 0;
@@ -147,7 +146,6 @@ export function PostsPage() {
       setError(message);
     } finally {
       isFetchingRef.current = false;
-      setIsFetching(false);
       setIsLoading(false);
     }
   }, [hydratePosts]);
@@ -220,7 +218,6 @@ export function PostsPage() {
   const loadOlderPosts = useCallback(async () => {
     if (!hasOlder || isFetchingRef.current) return 0;
     isFetchingRef.current = true;
-    setIsFetching(true);
     try {
       const nextOffset = Math.max(0, offset - PAGE_SIZE);
       const batch = await getPostsPaginated(PAGE_SIZE, nextOffset);
@@ -241,14 +238,12 @@ export function PostsPage() {
       return 0;
     } finally {
       isFetchingRef.current = false;
-      setIsFetching(false);
     }
   }, [hasOlder, offset, hydratePosts, loadedCount, totalCount]);
 
   const loadNewerPosts = useCallback(async () => {
     if (!hasNewer || isFetchingRef.current) return 0;
     isFetchingRef.current = true;
-    setIsFetching(true);
     try {
       const start = offset + loadedCount;
       const batch = await getPostsPaginated(PAGE_SIZE, start);
@@ -267,7 +262,6 @@ export function PostsPage() {
       return 0;
     } finally {
       isFetchingRef.current = false;
-      setIsFetching(false);
     }
   }, [hasNewer, offset, hydratePosts, loadedCount, totalCount]);
 
@@ -327,7 +321,22 @@ export function PostsPage() {
     if (!bookmarkedPostId) return;
     const target = document.getElementById(`post-${bookmarkedPostId}`);
     if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      const root = pageRef.current;
+      if (root) {
+        const rootRect = root.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const nextTop =
+          root.scrollTop +
+          (targetRect.top - rootRect.top) +
+          BOOKMARK_SCROLL_OFFSET;
+        root.scrollTo({ top: nextTop, behavior: "smooth" });
+      } else {
+        const nextTop =
+          window.scrollY +
+          target.getBoundingClientRect().top +
+          BOOKMARK_SCROLL_OFFSET;
+        window.scrollTo({ top: nextTop, behavior: "smooth" });
+      }
       return;
     }
     const jump = async () => {
@@ -456,7 +465,9 @@ export function PostsPage() {
                   aria-label={
                     hiddenPostIds.has(post.id) ? "Unhide post" : "Hide post"
                   }
-                  title={hiddenPostIds.has(post.id) ? "Unhide post" : "Hide post"}
+                  title={
+                    hiddenPostIds.has(post.id) ? "Unhide post" : "Hide post"
+                  }
                 >
                   <EyeOff size={16} />
                 </button>
