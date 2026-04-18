@@ -3,6 +3,7 @@ import { format } from "date-fns";
 import { Bookmark, Check, CheckCheck, Download, EyeOff } from "lucide-react";
 import { getAttachment } from "../../store/db";
 import type { Attachment, Message } from "../../types/chat";
+import { normalizeMojibakeText } from "../../utils/text";
 import styles from "./MessageBubble.module.css";
 import whatsappLogo from "../../assets/whatsapp.png";
 import facebookLogo from "../../assets/facebook-messenger.svg";
@@ -31,6 +32,8 @@ const formatAttachmentSize = (size: number) => `${(size / 1024).toFixed(1)} KB`;
 function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isImageViewerOpen, setIsImageViewerOpen] = useState(false);
+  const fileName = normalizeMojibakeText(attachment.fileName) ?? attachment.fileName;
 
   useEffect(() => {
     let url: string | null = null;
@@ -58,6 +61,25 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
     };
   }, [attachment.id]);
 
+  useEffect(() => {
+    if (!isImageViewerOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsImageViewerOpen(false);
+      }
+    };
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isImageViewerOpen]);
+
   if (isLoading) {
     return (
       <div
@@ -82,11 +104,49 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
     switch (attachment.type) {
       case "image":
         return (
-          <img
-            src={blobUrl}
-            alt={attachment.fileName}
-            className={`${styles.attachmentMedia} ${styles.attachmentImage}`}
-          />
+          <>
+            <button
+              type="button"
+              className={styles.imageButton}
+              onClick={() => setIsImageViewerOpen(true)}
+              aria-label={`Open image ${fileName}`}
+            >
+              <img
+                src={blobUrl}
+                alt={fileName}
+                className={`${styles.attachmentMedia} ${styles.attachmentImage}`}
+              />
+            </button>
+            {isImageViewerOpen && (
+              <div
+                className={styles.imageViewerOverlay}
+                onClick={() => setIsImageViewerOpen(false)}
+                role="presentation"
+              >
+                <div
+                  className={styles.imageViewerDialog}
+                  onClick={(event) => event.stopPropagation()}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={fileName}
+                >
+                  <button
+                    type="button"
+                    className={styles.imageViewerClose}
+                    onClick={() => setIsImageViewerOpen(false)}
+                    aria-label="Close image viewer"
+                  >
+                    ×
+                  </button>
+                  <img
+                    src={blobUrl}
+                    alt={fileName}
+                    className={styles.imageViewerImage}
+                  />
+                </div>
+              </div>
+            )}
+          </>
         );
       case "video":
         return (
@@ -107,12 +167,12 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
         return (
           <a
             href={blobUrl}
-            download={attachment.fileName}
+            download={fileName}
             className={styles.documentLink}
           >
             <span className={styles.documentIcon}>📄</span>
             <div className={styles.documentInfo}>
-              <div className={styles.documentName}>{attachment.fileName}</div>
+              <div className={styles.documentName}>{fileName}</div>
               {attachment.size && (
                 <div className={styles.documentSize}>
                   {formatAttachmentSize(attachment.size)}
@@ -139,10 +199,17 @@ export function MessageBubble({
   onToggleHidden,
 }: MessageBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const shouldTruncate = message.content.length > TRUNCATE_LIMIT && !isExpanded;
+  const content = normalizeMojibakeText(message.content) ?? message.content;
+  const senderName = normalizeMojibakeText(message.senderId) ?? message.senderId;
+  const quotedText = normalizeMojibakeText(message.quotedText);
+  const quotedSender = normalizeMojibakeText(message.quotedSender);
+  const hasAudioAttachment = Boolean(
+    message.attachments?.some((attachment) => attachment.type === "audio"),
+  );
+  const shouldTruncate = content.length > TRUNCATE_LIMIT && !isExpanded;
   const displayContent = shouldTruncate
-    ? message.content.substring(0, TRUNCATE_LIMIT) + "..."
-    : message.content;
+    ? content.substring(0, TRUNCATE_LIMIT) + "..."
+    : content;
   const sourceLogo = (() => {
     switch (message.source) {
       case "whatsapp":
@@ -166,12 +233,81 @@ export function MessageBubble({
 
   const renderContent = (content: string, isGmail: boolean) => {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const quoteHeaderRegexes = [
+      /^on\s+.+<[^>]+>\s*wrote:\s*$/i,
+      /^(il giorno|in data)\s+.+<[^>]+>\s*ha scritto:\s*$/i,
+    ];
+    const normalizeLineForQuoteMatch = (line: string) =>
+      line
+        .trim()
+        .replace(/^>+\s*/, "")
+        .replace(/^"+|"+$/g, "")
+        .trim();
+    const stripQuotedReply = (text: string) => {
+      const lines = text.split("\n");
+      let quoteStart = -1;
+
+      for (let i = 0; i < lines.length; i += 1) {
+        const l0 = normalizeLineForQuoteMatch(lines[i] ?? "");
+        const l1 = normalizeLineForQuoteMatch(lines[i + 1] ?? "");
+        const l2 = normalizeLineForQuoteMatch(lines[i + 2] ?? "");
+
+        const joined2 = `${l0} ${l1}`.trim();
+        const joined3 = `${l0} ${l1} ${l2}`.trim();
+        const windows = [l0, joined2, joined3];
+
+        const isHeader = windows.some((window) =>
+          quoteHeaderRegexes.some((regex) => regex.test(window)),
+        );
+
+        if (isHeader) {
+          quoteStart = i;
+          break;
+        }
+
+        const startsEnglish = /^on\b/i.test(l0) || /^on\b/i.test(joined2);
+        const startsItalian =
+          /^(il giorno|in data)\b/i.test(l0) ||
+          /^(il giorno|in data)\b/i.test(joined2);
+        const endsWithWrote = /^wrote:\s*$/i.test(l0);
+        const endsWithHaScritto = /^ha scritto:\s*$/i.test(l0);
+
+        if ((endsWithWrote && startsEnglish) || (endsWithHaScritto && startsItalian)) {
+          quoteStart = i;
+          break;
+        }
+      }
+
+      return quoteStart >= 0 ? lines.slice(0, quoteStart).join("\n").trim() : text;
+    };
+
+    const isGmailEmojiUrl = (url: string) => {
+      try {
+        const parsed = new URL(url);
+        return (
+          parsed.hostname === "mail.google.com" &&
+          parsed.pathname.startsWith("/mail/e/")
+        );
+      } catch {
+        return false;
+      }
+    };
 
     const renderLines = (lines: string[], keyPrefix: string) =>
       lines.map((line, lineIndex) => (
         <span key={`${keyPrefix}-line-${lineIndex}`}>
           {line.split(urlRegex).map((part, partIndex) => {
             if (part.match(urlRegex)) {
+              if (isGmail && isGmailEmojiUrl(part)) {
+                return (
+                  <img
+                    key={`${keyPrefix}-emoji-${lineIndex}-${partIndex}`}
+                    src={part}
+                    alt="emoji"
+                    className={styles.gmailInlineEmoji}
+                  />
+                );
+              }
               return (
                 <a
                   key={`${keyPrefix}-link-${lineIndex}-${partIndex}`}
@@ -204,7 +340,8 @@ export function MessageBubble({
         separatorIndex >= 0
           ? content.slice(separatorIndex + 2)
           : content.split("\n").slice(1).join("\n");
-      const bodyLines = body.split("\n");
+      const cleanedBody = stripQuotedReply(body);
+      const bodyLines = cleanedBody.split("\n");
 
       return (
         <>
@@ -262,21 +399,21 @@ export function MessageBubble({
           </div>
         )}
         <div
-          className={`${styles.bubbleBase} ${isMe ? styles.bubbleMe : styles.bubbleOther}`}
+          className={`${styles.bubbleBase} ${isMe ? styles.bubbleMe : styles.bubbleOther} ${hasAudioAttachment ? styles.bubbleWithAudio : ""}`}
         >
           <div className={styles.messageContent}>
             {/* Sender Name (if not me, or always if debugging) */}
             {!isMe && (
-              <div className={styles.senderName}>{message.senderId}</div>
+              <div className={styles.senderName}>{senderName}</div>
             )}
-            {message.quotedText && (
+            {quotedText && (
               <div
                 className={`${styles.replyBubble} ${isMe ? styles.replyBubbleMe : styles.replyBubbleOther}`}
               >
                 <div className={styles.replyLabel}>
-                  {message.quotedSender || "Reply"}
+                  {quotedSender || "Reply"}
                 </div>
-                <div className={styles.replyText}>{message.quotedText}</div>
+                <div className={styles.replyText}>{quotedText}</div>
               </div>
             )}
             {/* Attachments */}

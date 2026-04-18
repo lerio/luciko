@@ -9,6 +9,7 @@ const VALERIO_NAME = 'Valerio Donati';
 
 const EMAIL_TO_NAME: Record<string, string> = {
     'luci.milella@gmail.com': LUCY_NAME,
+    'luci-ko_1002@ezweb.ne.jp': LUCY_NAME,
     'valerio.donati@gmail.com': VALERIO_NAME
 };
 
@@ -16,17 +17,38 @@ const normalizeHeader = (value: string) => value.trim().toLowerCase();
 
 function normalizeZipPath(path: string) {
     let normalized = path.trim();
+    normalized = normalized.replace(/\\/g, '/');
+    normalized = normalized.replace(/^["']|["']$/g, '');
     if (normalized.startsWith('./')) normalized = normalized.slice(2);
     if (normalized.startsWith('/')) normalized = normalized.slice(1);
+    normalized = normalized.replace(/^file:\/\//i, '');
+    normalized = normalized.replace(/\/{2,}/g, '/');
     return normalized;
 }
 
 function splitAttachmentPaths(raw: string): string[] {
     const trimmed = raw.trim();
     if (!trimmed) return [];
-    return trimmed
-        .split(/\s*[|;]\s*/g)
+
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                return parsed
+                    .map((value) => String(value).trim())
+                    .map(normalizeZipPath)
+                    .filter(Boolean);
+            }
+        } catch {
+            // Fall back to string splitting below.
+        }
+    }
+
+    const csvParts = parseCsv(trimmed)[0] ?? [];
+    return csvParts
+        .flatMap((part) => part.split(/\s*[|;\n]\s*/g))
         .map((value) => value.trim())
+        .map(normalizeZipPath)
         .filter(Boolean);
 }
 
@@ -35,11 +57,78 @@ function resolveSender(email: string) {
     return EMAIL_TO_NAME[normalized] ?? email.trim();
 }
 
+function makePathCandidates(path: string, baseDir: string): string[] {
+    const normalized = normalizeZipPath(path);
+    if (!normalized) return [];
+
+    const candidates = new Set<string>();
+    candidates.add(normalized);
+
+    if (baseDir) {
+        candidates.add(`${baseDir}/${normalized}`.replace(/\/{2,}/g, '/'));
+    }
+
+    const segments = normalized.split('/').filter(Boolean);
+    for (let i = 1; i < segments.length; i += 1) {
+        const suffix = segments.slice(i).join('/');
+        candidates.add(suffix);
+        if (baseDir) {
+            candidates.add(`${baseDir}/${suffix}`.replace(/\/{2,}/g, '/'));
+        }
+    }
+
+    return Array.from(candidates);
+}
+
+function resolveAttachmentPath(
+    rawPath: string,
+    baseDir: string,
+    lookup: Map<string, string>,
+    normalizedPathKeys: string[]
+): string | null {
+    const candidates = makePathCandidates(rawPath, baseDir);
+    for (const candidate of candidates) {
+        const direct = lookup.get(candidate.toLowerCase());
+        if (direct) return direct;
+    }
+
+    for (const candidate of candidates) {
+        const normalizedCandidate = candidate.toLowerCase();
+        const suffix = `/${normalizedCandidate}`;
+        const match = normalizedPathKeys.find((path) => path === normalizedCandidate || path.endsWith(suffix));
+        if (match) {
+            return lookup.get(match) ?? null;
+        }
+    }
+
+    return null;
+}
+
+function buildMessageKey(
+    timestamp: Date,
+    senderId: string,
+    recipientId: string,
+    subject: string,
+    body: string
+) {
+    return `gmail_${timestamp.toISOString()}_${senderId}_${recipientId}_${subject}_${body}`;
+}
+
+function buildExternalId(
+    timestamp: Date,
+    senderId: string,
+    recipientId: string,
+    subject: string
+) {
+    // Keep compatibility with old imports where attachment names were empty.
+    return `gmail_${timestamp.toISOString()}_${senderId}_${recipientId}_${subject}_`;
+}
+
 export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip): Promise<ParseResult> {
     const zip = zipInput ?? await JSZip.loadAsync(file);
     const logs: string[] = [];
     const errors: string[] = [];
-    const messages: Message[] = [];
+    const messagesByKey = new Map<string, Message>();
 
     const csvEntry = Object.keys(zip.files).find((name) => /emails\.csv$/i.test(name) && !name.includes('__MACOSX'));
     if (!csvEntry) {
@@ -52,6 +141,15 @@ export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip
     const rows = data
         .filter((row) => row.length)
         .map((row) => toRowObject(headers, row, normalizeHeader));
+
+    const zipEntryPaths = Object.keys(zip.files)
+        .filter((name) => !zip.files[name].dir && !name.includes('__MACOSX'))
+        .map(normalizeZipPath);
+    const zipEntryPathKeys = zipEntryPaths.map((path) => path.toLowerCase());
+    const zipPathLookup = new Map<string, string>();
+    for (const zipPath of zipEntryPaths) {
+        zipPathLookup.set(zipPath.toLowerCase(), zipPath);
+    }
 
     for (const row of rows) {
         const senderEmail = row['sender email']?.trim() ?? '';
@@ -81,17 +179,14 @@ export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip
         const attachments: Attachment[] = [];
         const attachmentPaths = splitAttachmentPaths(attachmentPathRaw);
         for (const rawPath of attachmentPaths) {
-            const normalized = normalizeZipPath(rawPath);
-            const resolved = baseDir && !normalized.startsWith(baseDir)
-                ? `${baseDir}/${normalized}`
-                : normalized;
-            const zipEntry = zip.file(resolved);
+            const resolvedPath = resolveAttachmentPath(rawPath, baseDir, zipPathLookup, zipEntryPathKeys);
+            const zipEntry = resolvedPath ? zip.file(resolvedPath) : null;
             if (!zipEntry) {
-                logs.push(`Missing attachment file: ${resolved}`);
+                logs.push(`Missing attachment file: ${rawPath}`);
                 continue;
             }
             const blob = await zipEntry.async('blob');
-            const fileName = normalized.split('/').pop() || normalized;
+            const fileName = resolvedPath!.split('/').pop() || resolvedPath!;
             attachments.push({
                 id: uuidv4(),
                 type: getAttachmentType(fileName),
@@ -106,10 +201,17 @@ export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip
             continue;
         }
 
-        const attachmentNames = attachments.map((att) => att.fileName).join(',');
-        const externalId = `gmail_${timestamp.toISOString()}_${senderId}_${recipientId}_${subject}_${attachmentNames}`;
+        const messageKey = buildMessageKey(timestamp, senderId, recipientId, subject, body);
+        const existing = messagesByKey.get(messageKey);
 
-        messages.push({
+        if (existing) {
+            if (attachments.length > 0) {
+                existing.attachments = [...(existing.attachments ?? []), ...attachments];
+            }
+            continue;
+        }
+
+        messagesByKey.set(messageKey, {
             id: uuidv4(),
             chatId,
             senderId,
@@ -118,10 +220,11 @@ export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip
             status: 'read',
             attachments: attachments.length ? attachments : undefined,
             source: 'gmail',
-            externalId
+            externalId: buildExternalId(timestamp, senderId, recipientId, subject)
         });
     }
 
+    const messages = Array.from(messagesByKey.values());
     messages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
     return { messages, errors, logs };
 }

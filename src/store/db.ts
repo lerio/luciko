@@ -2,6 +2,7 @@ import { openDB } from 'idb';
 import type { DBSchema, IDBPDatabase } from 'idb';
 import type { Message } from '../types/chat';
 import type { PostRecord, PostMedia } from '../types/posts';
+import { normalizeMojibakeText } from '../utils/text';
 
 interface LucikoDB extends DBSchema {
     messages: {
@@ -260,6 +261,18 @@ export async function importMessages(messages: Message[]): Promise<number> {
 
     let importedCount = 0;
 
+    const normalizeMessage = (message: Message): Message => ({
+        ...message,
+        senderId: normalizeMojibakeText(message.senderId) ?? message.senderId,
+        content: normalizeMojibakeText(message.content) ?? message.content,
+        quotedText: normalizeMojibakeText(message.quotedText),
+        quotedSender: normalizeMojibakeText(message.quotedSender),
+        attachments: message.attachments?.map((attachment) => ({
+            ...attachment,
+            fileName: normalizeMojibakeText(attachment.fileName) ?? attachment.fileName
+        }))
+    });
+
     const normalizeReactions = (reactions?: Message['reactions']) => {
         if (!reactions) return [];
         return [...reactions].sort((a, b) => a.emoji.localeCompare(b.emoji));
@@ -315,10 +328,11 @@ export async function importMessages(messages: Message[]): Promise<number> {
 
     const normalizedMessages: Message[] = [];
     for (const msg of messages) {
-        if (msg.attachments && msg.attachments.length > 0) {
-            msg.attachments = await dedupeAttachments(msg.attachments);
+        const normalizedMessage = normalizeMessage(msg);
+        if (normalizedMessage.attachments && normalizedMessage.attachments.length > 0) {
+            normalizedMessage.attachments = await dedupeAttachments(normalizedMessage.attachments);
         }
-        normalizedMessages.push(msg);
+        normalizedMessages.push(normalizedMessage);
     }
 
     // Use a single transaction for both stores to prevent auto-commit issues
@@ -329,7 +343,7 @@ export async function importMessages(messages: Message[]): Promise<number> {
 
     for (const msg of normalizedMessages) {
         if (msg.externalId) {
-            const existing = await externalIdIndex.get(msg.externalId);
+            let existing = await externalIdIndex.get(msg.externalId);
 
             if (!existing) {
                 // Save attachments first
@@ -355,6 +369,17 @@ export async function importMessages(messages: Message[]): Promise<number> {
             } else {
                 // UPGRADE CASE: Message exists, check if new import has attachments to fill in
                 let wasUpdated = false;
+                const normalizedExisting = normalizeMessage(existing);
+                if (
+                    normalizedExisting.senderId !== existing.senderId ||
+                    normalizedExisting.content !== existing.content ||
+                    normalizedExisting.quotedText !== existing.quotedText ||
+                    normalizedExisting.quotedSender !== existing.quotedSender ||
+                    JSON.stringify(normalizedExisting.attachments ?? []) !== JSON.stringify(existing.attachments ?? [])
+                ) {
+                    existing = { ...existing, ...normalizedExisting };
+                    wasUpdated = true;
+                }
                 if (msg.attachments && msg.attachments.length > 0) {
                     const updatedAttachments = [...(existing.attachments || [])];
 
@@ -386,8 +411,10 @@ export async function importMessages(messages: Message[]): Promise<number> {
 
                     if (wasUpdated) {
                         existing.attachments = await dedupeAttachments(updatedAttachments);
-                        // Also sync content just in case it was cleaned up by parser
+                        existing.senderId = msg.senderId;
                         existing.content = msg.content;
+                        existing.quotedText = msg.quotedText;
+                        existing.quotedSender = msg.quotedSender;
                     }
                 }
                 if (msg.reactions && msg.reactions.length > 0 && !reactionsEqual(existing.reactions, msg.reactions)) {

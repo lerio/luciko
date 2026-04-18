@@ -85,6 +85,22 @@ function parseReactions(row: CsvRow): { emoji: string; count: number }[] | undef
     return Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count }));
 }
 
+function buildMediaCandidates(path: string): string[] {
+    const trimmed = path.trim();
+    if (!trimmed) return [];
+
+    const replaceExtensionWithThumb = (() => {
+        const lastSlash = trimmed.lastIndexOf('/');
+        const lastDot = trimmed.lastIndexOf('.');
+        if (lastDot > lastSlash) {
+            return `${trimmed.slice(0, lastDot)}.thumb`;
+        }
+        return `${trimmed}.thumb`;
+    })();
+
+    return [trimmed, `${trimmed}.thumb`, replaceExtensionWithThumb];
+}
+
 export async function parseWhatsAppZip(file: File, chatId: string, zipInput?: JSZip): Promise<ParseResult> {
     const zip = zipInput ?? await JSZip.loadAsync(file);
     const logs: string[] = [];
@@ -155,12 +171,12 @@ export async function parseWhatsAppZip(file: File, chatId: string, zipInput?: JS
 
         let attachments: Attachment[] | undefined;
         if (mediaLocalPath || mediaThumbnailPath) {
-            const candidates = [
-                mediaLocalPath,
-                mediaThumbnailPath,
-                mediaLocalPath ? `${mediaLocalPath}.thumb` : '',
-                mediaThumbnailPath ? `${mediaThumbnailPath}.thumb` : ''
-            ].filter(Boolean);
+            const candidates = Array.from(
+                new Set([
+                    ...buildMediaCandidates(mediaLocalPath),
+                    ...buildMediaCandidates(mediaThumbnailPath)
+                ])
+            );
 
             let mediaEntry: JSZip.JSZipObject | null = null;
             let resolvedPath = '';

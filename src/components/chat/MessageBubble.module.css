@@ -13,6 +13,7 @@
 
 .attachmentWrapper {
   margin-bottom: 5px;
+  max-width: 100%;
 }
 
 .attachmentMedia {
@@ -20,8 +21,64 @@
   border-radius: 6px;
 }
 
+.imageButton {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  width: 100%;
+}
+
 .attachmentImage {
   display: block;
+}
+
+.imageViewerOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(17, 27, 33, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.imageViewerDialog {
+  position: relative;
+  max-width: min(92vw, 1200px);
+  max-height: 92vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.imageViewerImage {
+  display: block;
+  max-width: 100%;
+  max-height: 92vh;
+  border-radius: 10px;
+  object-fit: contain;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+}
+
+.imageViewerClose {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .audioWrapper {
@@ -29,11 +86,15 @@
   align-items: center;
   gap: 8px;
   padding: 4px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .audioPlayer {
+  display: block;
   width: 100%;
-  min-width: 200px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .documentLink {
@@ -110,6 +171,11 @@
   border-radius: 7.5px;
   box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
   position: relative;
+}
+
+.bubbleWithAudio {
+  max-width: min(92vw, 420px);
+  min-width: min(300px, calc(100vw - 88px));
 }
 
 .sideControls {
@@ -233,6 +299,14 @@
   color: #00a5f4;
   text-decoration: underline;
   word-break: break-word;
+}
+
+.gmailInlineEmoji {
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  vertical-align: text-bottom;
+  object-fit: contain;
 }
 
 .metaRow {

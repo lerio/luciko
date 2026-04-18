@@ -3,6 +3,7 @@ import type { ParseResult } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import JSZip from 'jszip';
 import { getAttachmentType } from '../utils';
+import { normalizeMojibakeText } from '../../utils/text';
 
 type GoogleChatMessage = {
     creator?: { name?: string };
@@ -60,7 +61,7 @@ export async function parseGoogleChatZip(file: File, chatId: string, zipInput?: 
     let failedDates = 0;
     let loggedSample = false;
     for (const record of records) {
-        const sender = record.creator?.name?.trim() ?? '';
+        const sender = normalizeMojibakeText(record.creator?.name?.trim()) ?? '';
         const timestampRaw = record.created_date ?? '';
         const timestamp = parseGoogleChatDate(timestampRaw);
         if (!timestamp) {
@@ -82,7 +83,7 @@ export async function parseGoogleChatZip(file: File, chatId: string, zipInput?: 
             continue;
         }
 
-        const content = record.text?.trim() ?? '';
+        const content = normalizeMojibakeText(record.text?.trim()) ?? '';
         const attachments: Attachment[] = [];
 
         if (record.attached_files) {
@@ -96,7 +97,7 @@ export async function parseGoogleChatZip(file: File, chatId: string, zipInput?: 
                     continue;
                 }
                 const blob = await zipEntry.async('blob');
-                const fileName = fileEntry.original_name || exportName;
+                const fileName = normalizeMojibakeText(fileEntry.original_name || exportName) || exportName;
                 attachments.push({
                     id: uuidv4(),
                     type: getAttachmentType(fileName),

@@ -2,6 +2,7 @@ import type { Message } from '../../types/chat';
 import type { ParseResult } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { parseCsv } from '../utils';
+import { normalizeMojibakeText } from '../../utils/text';
 
 const EMAIL_TO_NAME: Record<string, string> = {
     'luci.milella@gmail.com': 'Luciana Milella',
@@ -45,8 +46,8 @@ export async function parseOldGoogleChatCsv(file: File, chatId: string): Promise
 
     for (const row of dataRows) {
         if (!row.length) continue;
-        const senderEmail = (row[senderIndex] ?? '').trim();
-        const content = (row[messageIndex] ?? '').trim();
+        const senderEmail = normalizeMojibakeText((row[senderIndex] ?? '').trim()) ?? '';
+        const content = normalizeMojibakeText((row[messageIndex] ?? '').trim()) ?? '';
         const datetimeRaw = (row[datetimeIndex] ?? '').trim();
         const timestamp = parseDatetime(datetimeRaw);
 
@@ -57,7 +58,7 @@ export async function parseOldGoogleChatCsv(file: File, chatId: string): Promise
 
         if (!content) continue;
 
-        const senderId = EMAIL_TO_NAME[senderEmail] ?? senderEmail;
+        const senderId = normalizeMojibakeText(EMAIL_TO_NAME[senderEmail] ?? senderEmail) ?? senderEmail;
         const externalId = `gchat_old_${timestamp.toISOString()}_${senderId}_${content}`;
 
         messages.push({
