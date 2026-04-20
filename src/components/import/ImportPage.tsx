@@ -105,7 +105,11 @@ const HANDLERS: ImportHandler[] = [
 export function ImportPage() {
     const [isDragging, setIsDragging] = useState(false);
     const [importStatus, setImportStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-    const [stats, setStats] = useState<{ total: number; imported: number }>({ total: 0, imported: 0 });
+    const [stats, setStats] = useState<{ total: number; sourceTotal?: number; inserted: number; updated: number }>({
+        total: 0,
+        inserted: 0,
+        updated: 0
+    });
     const [errorMessage, setErrorMessage] = useState<string>('');
     const [logs, setLogs] = useState<string[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -171,20 +175,22 @@ export function ImportPage() {
             }
             const { handler, zip } = detected;
             const result = await handler.parse(file, TARGET_CHAT_ID, zip);
-            let importedCount = 0;
+            let importStats = { inserted: 0, updated: 0 };
             const totalCount = isPostsResult(result)
                 ? result.posts.length
                 : result.messages.length;
             const combinedLogs: string[] = result.logs || [];
             if (isPostsResult(result)) {
-                importedCount = await importPosts(result.posts);
+                importStats = await importPosts(result.posts);
             } else {
-                importedCount = await importMessages(result.messages);
+                importStats = await importMessages(result.messages);
             }
 
             setStats({
                 total: totalCount,
-                imported: importedCount
+                sourceTotal: 'sourceItemCount' in result ? result.sourceItemCount : undefined,
+                inserted: importStats.inserted,
+                updated: importStats.updated
             });
             setLogs(combinedLogs);
             setImportStatus('success');
@@ -236,7 +242,13 @@ export function ImportPage() {
                     <CheckCircle size={24} color="var(--color-primary)" className={styles.statusIcon} />
                     <div>
                         <h3 style={{ marginBottom: '4px' }}>Import Successful</h3>
-                        <p>Processed {stats.total} items. Imported {stats.imported} new items ({stats.total - stats.imported} duplicates skipped).</p>
+                        <p>
+                            Processed {stats.total} items
+                            {stats.sourceTotal && stats.sourceTotal !== stats.total ? ` from ${stats.sourceTotal} source rows` : ''}.
+                            {' '}Imported {stats.inserted} new items.
+                            {stats.updated > 0 ? ` Updated ${stats.updated} existing items.` : ''}
+                            {' '}{stats.total - stats.inserted - stats.updated} duplicates skipped.
+                        </p>
                     </div>
                 </div>
             )}

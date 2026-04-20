@@ -226,5 +226,5 @@ export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip
 
     const messages = Array.from(messagesByKey.values());
     messages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-    return { messages, errors, logs };
+    return { messages, errors, logs, sourceItemCount: rows.length };
 }

@@ -4,4 +4,5 @@ export interface ParseResult {
     messages: Message[];
     errors: string[];
     logs: string[];
+    sourceItemCount?: number;
 }

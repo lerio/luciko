@@ -4,6 +4,7 @@ import { MessageList } from "../chat/MessageList";
 import { Bookmark, EyeOff, Eye } from "lucide-react";
 import { getBookmark, setBookmark, getHiddenItems, setHiddenItem } from "../../store/db";
 import styles from "./ChatArea.module.css";
+import { format } from "date-fns";
 
 interface ChatAreaProps {
   activeChat: Chat | null | undefined;
@@ -28,6 +29,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   const [isBookmarkScrollPending, setIsBookmarkScrollPending] = useState(false);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
+  const [stickyDateLabel, setStickyDateLabel] = useState<string | null>(null);
 
   const scrollToBottom = async () => {
     if (onJumpToLatest) {
@@ -188,6 +190,61 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   );
 
   useEffect(() => {
+    if (visibleMessages.length === 0) {
+      setStickyDateLabel(null);
+      return;
+    }
+
+    const container = messagesRef.current;
+    if (!container) {
+      setStickyDateLabel(format(visibleMessages[0].timestamp, "MMMM d, yyyy"));
+      return;
+    }
+
+    const stickyOffset = 10;
+    let frameId = 0;
+
+    const updateStickyDate = () => {
+      const markers = Array.from(container.querySelectorAll<HTMLElement>("[data-date-marker='true']"));
+      if (markers.length === 0) {
+        setStickyDateLabel(format(visibleMessages[0].timestamp, "MMMM d, yyyy"));
+        return;
+      }
+
+      const threshold = container.scrollTop + stickyOffset;
+      let nextLabel = markers[0].dataset.dateLabel ?? format(visibleMessages[0].timestamp, "MMMM d, yyyy");
+
+      for (const marker of markers) {
+        if (marker.offsetTop <= threshold) {
+          nextLabel = marker.dataset.dateLabel ?? nextLabel;
+        } else {
+          break;
+        }
+      }
+
+      setStickyDateLabel(nextLabel);
+    };
+
+    const handleScroll = () => {
+      if (frameId) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0;
+        updateStickyDate();
+      });
+    };
+
+    updateStickyDate();
+    container.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [visibleMessages]);
+
+  useEffect(() => {
     if (!onLoadOlder || !hasOlder) return;
 
     const root = messagesRef.current;
@@ -280,6 +337,11 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
       </div>
 
       <div className={styles.messagesWrapper} ref={messagesRef}>
+        {stickyDateLabel && (
+          <div className={styles.stickyDateOverlay} aria-hidden="true">
+            <span className={styles.stickyDateChip}>{stickyDateLabel}</span>
+          </div>
+        )}
         {/* Sentinel for infinite scroll (load older messages) */}
         <div ref={topSentinelRef} className={styles.sentinel} />
         <MessageList

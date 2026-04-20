@@ -253,13 +253,22 @@ export async function getMessagesPaginated(
 }
 
 /**
- * Imports messages, skipping duplicates based on externalId.
- * Returns the number of new messages imported.
+ * Import summary for messages and posts.
  */
-export async function importMessages(messages: Message[]): Promise<number> {
+export interface ImportStats {
+    inserted: number;
+    updated: number;
+}
+
+/**
+ * Imports messages, skipping duplicates based on externalId.
+ * Returns counts for inserted and updated messages.
+ */
+export async function importMessages(messages: Message[]): Promise<ImportStats> {
     const db = await initDB();
 
-    let importedCount = 0;
+    let insertedCount = 0;
+    let updatedCount = 0;
 
     const normalizeMessage = (message: Message): Message => ({
         ...message,
@@ -365,7 +374,7 @@ export async function importMessages(messages: Message[]): Promise<number> {
                 }
 
                 await messageStore.put(msgToStore);
-                importedCount++;
+                insertedCount++;
             } else {
                 // UPGRADE CASE: Message exists, check if new import has attachments to fill in
                 let wasUpdated = false;
@@ -401,10 +410,12 @@ export async function importMessages(messages: Message[]): Promise<number> {
                                 wasUpdated = true;
                                 existingByKey.set(key, newAtt);
                             } else {
-                                // Meta exists, check if blob is actually in store (or just assume we should put it)
-                                // We'll use the ID from the existing metadata to keep it consistent
-                                await attachmentStore.put(newAtt.file, existingAtt.id);
-                                wasUpdated = true;
+                                // Preserve the existing attachment id and only restore the blob if it is missing.
+                                const storedBlob = await attachmentStore.get(existingAtt.id);
+                                if (!storedBlob) {
+                                    await attachmentStore.put(newAtt.file, existingAtt.id);
+                                    wasUpdated = true;
+                                }
                             }
                         }
                     }
@@ -424,26 +435,27 @@ export async function importMessages(messages: Message[]): Promise<number> {
 
                 if (wasUpdated) {
                     await messageStore.put(existing);
-                    importedCount++;
+                    updatedCount++;
                 }
             }
         } else {
             await messageStore.put(msg);
-            importedCount++;
+            insertedCount++;
         }
     }
 
     await tx.done;
-    return importedCount;
+    return { inserted: insertedCount, updated: updatedCount };
 }
 
 /**
  * Imports posts, skipping duplicates based on externalId.
- * Returns the number of new posts imported.
+ * Returns counts for inserted and updated posts.
  */
-export async function importPosts(posts: PostRecord[]): Promise<number> {
+export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
     const db = await initDB();
-    let importedCount = 0;
+    let insertedCount = 0;
+    let updatedCount = 0;
 
     const hashBlob = async (blob: Blob): Promise<string> => {
         if (!globalThis.crypto?.subtle) {
@@ -520,7 +532,7 @@ export async function importPosts(posts: PostRecord[]): Promise<number> {
                 postToStore.media = postToStore.media.map((media) => ({ ...media, file: undefined }));
             }
             await postStore.put(postToStore);
-            importedCount++;
+            insertedCount++;
         } else {
             let wasUpdated = false;
             if (post.media && post.media.length > 0) {
@@ -536,7 +548,11 @@ export async function importPosts(posts: PostRecord[]): Promise<number> {
                         updatedMedia.push({ ...media, file: undefined });
                         wasUpdated = true;
                     } else if (media.file) {
-                        await attachmentStore.put(media.file, current.id);
+                        const storedBlob = await attachmentStore.get(current.id);
+                        if (!storedBlob) {
+                            await attachmentStore.put(media.file, current.id);
+                            wasUpdated = true;
+                        }
                     }
                 }
 
@@ -560,13 +576,13 @@ export async function importPosts(posts: PostRecord[]): Promise<number> {
 
             if (wasUpdated) {
                 await postStore.put(existing);
-                importedCount++;
+                updatedCount++;
             }
         }
     }
 
     await tx.done;
-    return importedCount;
+    return { inserted: insertedCount, updated: updatedCount };
 }
 
 

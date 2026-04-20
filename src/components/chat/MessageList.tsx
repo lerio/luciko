@@ -17,10 +17,18 @@ export function MessageList({ messages, currentUserId, bookmarkedMessageId, hidd
     const { nodes } = messages.reduce(
         (acc, msg) => {
             const isNewDay = !acc.lastDate || !isSameDay(acc.lastDate, msg.timestamp);
+            const dateKey = format(msg.timestamp, 'yyyy-MM-dd');
+            const dateLabel = format(msg.timestamp, 'MMMM d, yyyy');
             const dateRow = isNewDay ? (
-                <div key={`date-${format(msg.timestamp, 'yyyy-MM-dd')}-${msg.id}`} className={styles.dateRow}>
+                <div
+                    key={`date-${dateKey}-${msg.id}`}
+                    className={styles.dateRow}
+                    data-date-marker="true"
+                    data-date-key={dateKey}
+                    data-date-label={dateLabel}
+                >
                     <span className={styles.dateChip}>
-                        {format(msg.timestamp, 'MMMM d, yyyy')}
+                        {dateLabel}
                     </span>
                 </div>
             ) : null;
