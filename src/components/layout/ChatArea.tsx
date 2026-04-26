@@ -5,6 +5,7 @@ import { Bookmark, EyeOff, Eye } from "lucide-react";
 import { getBookmark, setBookmark, getHiddenItems, setHiddenItem } from "../../store/db";
 import styles from "./ChatArea.module.css";
 import { format } from "date-fns";
+import messageListStyles from "../chat/MessageList.module.css";
 
 interface ChatAreaProps {
   activeChat: Chat | null | undefined;
@@ -24,6 +25,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const bookmarkLoadTokenRef = useRef(0);
+  const hiddenMarkerRef = useRef<HTMLElement | null>(null);
   const [bookmarkedMessageId, setBookmarkedMessageId] = useState<string | null>(null);
   const [isBookmarkReady, setIsBookmarkReady] = useState(false);
   const [isBookmarkScrollPending, setIsBookmarkScrollPending] = useState(false);
@@ -191,46 +193,57 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
 
   useEffect(() => {
     if (visibleMessages.length === 0) {
+      hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+      hiddenMarkerRef.current = null;
       setStickyDateLabel(null);
       return;
     }
 
     const container = messagesRef.current;
     if (!container) {
+      hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+      hiddenMarkerRef.current = null;
       setStickyDateLabel(format(visibleMessages[0].timestamp, "MMMM d, yyyy"));
       return;
     }
 
     const stickyOffset = 10;
-    let frameId = 0;
 
     const updateStickyDate = () => {
       const markers = Array.from(container.querySelectorAll<HTMLElement>("[data-date-marker='true']"));
       if (markers.length === 0) {
+        hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+        hiddenMarkerRef.current = null;
         setStickyDateLabel(format(visibleMessages[0].timestamp, "MMMM d, yyyy"));
         return;
       }
 
-      const threshold = container.scrollTop + stickyOffset;
+      const containerTop = container.getBoundingClientRect().top;
+      const threshold = containerTop + stickyOffset;
       let nextLabel = markers[0].dataset.dateLabel ?? format(visibleMessages[0].timestamp, "MMMM d, yyyy");
+      let nextMarker: HTMLElement | null = null;
 
       for (const marker of markers) {
-        if (marker.offsetTop <= threshold) {
+        if (marker.getBoundingClientRect().top <= threshold) {
           nextLabel = marker.dataset.dateLabel ?? nextLabel;
+          nextMarker = marker;
         } else {
           break;
         }
       }
 
+      if (hiddenMarkerRef.current && hiddenMarkerRef.current !== nextMarker) {
+        hiddenMarkerRef.current.classList.remove(messageListStyles.dateRowHidden);
+      }
+      if (nextMarker) {
+        nextMarker.classList.add(messageListStyles.dateRowHidden);
+      }
+      hiddenMarkerRef.current = nextMarker;
       setStickyDateLabel(nextLabel);
     };
 
     const handleScroll = () => {
-      if (frameId) return;
-      frameId = window.requestAnimationFrame(() => {
-        frameId = 0;
-        updateStickyDate();
-      });
+      updateStickyDate();
     };
 
     updateStickyDate();
@@ -238,9 +251,8 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
-      if (frameId) {
-        window.cancelAnimationFrame(frameId);
-      }
+      hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+      hiddenMarkerRef.current = null;
     };
   }, [visibleMessages]);
 

@@ -3,6 +3,7 @@ import { format } from "date-fns";
 import { Bookmark, Check, CheckCheck, Download, EyeOff } from "lucide-react";
 import { getAttachment } from "../../store/db";
 import type { Attachment, Message } from "../../types/chat";
+import { isGmailGoomojiUrl, resolveGmailGoomoji } from "../../utils/gmailGoomoji";
 import { normalizeMojibakeText } from "../../utils/text";
 import styles from "./MessageBubble.module.css";
 import whatsappLogo from "../../assets/whatsapp.png";
@@ -233,6 +234,8 @@ export function MessageBubble({
 
   const renderContent = (content: string, isGmail: boolean) => {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const gmailGoomojiTokenRegex =
+      /(https:\/\/mail\.google\.com\/mail\/e\/[A-Za-z0-9]{3})/g;
     const quoteHeaderRegexes = [
       /^on\s+.+<[^>]+>\s*wrote:\s*$/i,
       /^(il giorno|in data)\s+.+<[^>]+>\s*ha scritto:\s*$/i,
@@ -281,30 +284,40 @@ export function MessageBubble({
       return quoteStart >= 0 ? lines.slice(0, quoteStart).join("\n").trim() : text;
     };
 
-    const isGmailEmojiUrl = (url: string) => {
-      try {
-        const parsed = new URL(url);
-        return (
-          parsed.hostname === "mail.google.com" &&
-          parsed.pathname.startsWith("/mail/e/")
-        );
-      } catch {
-        return false;
-      }
+    const splitGmailLineParts = (line: string) => {
+      if (!isGmail) return line.split(urlRegex);
+
+      return line.split(gmailGoomojiTokenRegex).flatMap((part) => {
+        if (isGmailGoomojiUrl(part)) return [part];
+        return part.split(urlRegex).filter((segment) => segment.length > 0);
+      });
     };
 
     const renderLines = (lines: string[], keyPrefix: string) =>
       lines.map((line, lineIndex) => (
         <span key={`${keyPrefix}-line-${lineIndex}`}>
-          {line.split(urlRegex).map((part, partIndex) => {
+          {splitGmailLineParts(line).map((part, partIndex) => {
             if (part.match(urlRegex)) {
-              if (isGmail && isGmailEmojiUrl(part)) {
+              if (isGmail && isGmailGoomojiUrl(part)) {
+                const goomoji = resolveGmailGoomoji(part);
+                if (goomoji) {
+                  return (
+                    <span
+                      key={`${keyPrefix}-emoji-${lineIndex}-${partIndex}`}
+                      className={styles.gmailInlineEmoji}
+                      aria-label={goomoji}
+                      role="img"
+                    >
+                      {goomoji}
+                    </span>
+                  );
+                }
+
                 return (
-                  <img
+                  <span
                     key={`${keyPrefix}-emoji-${lineIndex}-${partIndex}`}
-                    src={part}
-                    alt="emoji"
                     className={styles.gmailInlineEmoji}
+                    aria-hidden="true"
                   />
                 );
               }
