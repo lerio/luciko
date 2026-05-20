@@ -71,3 +71,15 @@ export default defineConfig([
   },
 ])
 ```
+
+## Cloudflare deployment
+
+This repo is being prepared for Cloudflare Pages + Functions.
+
+Bindings expected by the API routes:
+- `LUCIKO_DB` for D1
+- `LUCIKO_BUCKET` for R2
+
+Current routes:
+- `GET /api/health` checks whether the Cloudflare bindings are present and initializes the D1 schema if available.
+- `GET /api/sync` and `POST /api/sync` are scaffolds for the encrypted sync layer.

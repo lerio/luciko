@@ -29,7 +29,12 @@ type Post = Omit<PostRecord, "media"> & {
 const PAGE_SIZE = 60;
 const BOOKMARK_SCROLL_OFFSET = -70;
 
-export function PostsPage() {
+interface PostsPageProps {
+  focusRequest?: { postId: string; token: number } | null;
+  onFocusRequestHandled?: () => void;
+}
+
+export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProps) {
   const [posts, setPosts] = useState<Post[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +89,58 @@ export function PostsPage() {
     [],
   );
 
+  const scrollToPost = useCallback((postId: string) => {
+    const target = document.getElementById(`post-${postId}`);
+    if (!target) return false;
+
+    const root = pageRef.current;
+    if (root) {
+      const rootRect = root.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const nextTop =
+        root.scrollTop +
+        (targetRect.top - rootRect.top) +
+        BOOKMARK_SCROLL_OFFSET;
+      root.scrollTo({ top: nextTop, behavior: "smooth" });
+    } else {
+      const nextTop =
+        window.scrollY +
+        target.getBoundingClientRect().top +
+        BOOKMARK_SCROLL_OFFSET;
+      window.scrollTo({ top: nextTop, behavior: "smooth" });
+    }
+
+    return true;
+  }, []);
+
+  const loadAroundPost = useCallback(async (postId: string) => {
+    const position = await getPostOffset(postId);
+    if (position === null) return;
+
+    const total = await getPostsCount();
+    const start = Math.max(
+      0,
+      Math.min(
+        position - Math.floor(PAGE_SIZE / 2),
+        Math.max(0, total - PAGE_SIZE),
+      ),
+    );
+    const batch = await getPostsPaginated(PAGE_SIZE, start);
+    const hydrated = await hydratePosts(batch);
+
+    setPosts(hydrated);
+    setOffset(start);
+    setTotalCount(total);
+    setHasOlder(start > 0);
+    setHasNewer(start + batch.length < total);
+    setLoadedCount(batch.length);
+
+    requestAnimationFrame(() => {
+      scrollToPost(postId);
+      onFocusRequestHandled?.();
+    });
+  }, [hydratePosts, scrollToPost, onFocusRequestHandled]);
+
   const loadInitialPosts = useCallback(async () => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -109,8 +166,11 @@ export function PostsPage() {
   }, [hydratePosts]);
 
   useEffect(() => {
-    loadInitialPosts();
+    const timeoutId = window.setTimeout(() => {
+      void loadInitialPosts();
+    }, 0);
     return () => {
+      window.clearTimeout(timeoutId);
       objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       objectUrlsRef.current = [];
     };
@@ -277,48 +337,19 @@ export function PostsPage() {
 
   const jumpToBookmark = () => {
     if (!bookmarkedPostId) return;
-    const target = document.getElementById(`post-${bookmarkedPostId}`);
-    if (target) {
-      const root = pageRef.current;
-      if (root) {
-        const rootRect = root.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
-        const nextTop =
-          root.scrollTop +
-          (targetRect.top - rootRect.top) +
-          BOOKMARK_SCROLL_OFFSET;
-        root.scrollTo({ top: nextTop, behavior: "smooth" });
-      } else {
-        const nextTop =
-          window.scrollY +
-          target.getBoundingClientRect().top +
-          BOOKMARK_SCROLL_OFFSET;
-        window.scrollTo({ top: nextTop, behavior: "smooth" });
-      }
+    if (scrollToPost(bookmarkedPostId)) {
       return;
     }
-    const jump = async () => {
-      const position = await getPostOffset(bookmarkedPostId);
-      if (position === null) return;
-      const total = await getPostsCount();
-      const start = Math.max(
-        0,
-        Math.min(
-          position - Math.floor(PAGE_SIZE / 2),
-          Math.max(0, total - PAGE_SIZE),
-        ),
-      );
-      const batch = await getPostsPaginated(PAGE_SIZE, start);
-      const hydrated = await hydratePosts(batch);
-      setPosts(hydrated);
-      setOffset(start);
-      setTotalCount(total);
-      setHasOlder(start > 0);
-      setHasNewer(start + batch.length < total);
-      setLoadedCount(batch.length);
-    };
-    jump();
+    void loadAroundPost(bookmarkedPostId);
   };
+
+  useEffect(() => {
+    if (!focusRequest?.postId) return;
+    const timeoutId = window.setTimeout(() => {
+      void loadAroundPost(focusRequest.postId);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [focusRequest?.postId, focusRequest?.token, loadAroundPost]);
 
   const displayName = useMemo(() => TARGET_CHAT.name, []);
   const getAvatarForAuthor = (author?: string) => {

@@ -4,21 +4,25 @@ import { ChatArea } from './ChatArea';
 import { ImportPage } from '../import/ImportPage';
 import { PostsPage } from '../posts/PostsPage';
 import { getMessageOffsetInChat, getMessagesPaginated, getMessagesCount } from '../../store/db';
-import { Upload, MessageSquare, Newspaper } from 'lucide-react';
+import { Upload, MessageSquare, Newspaper, Search } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
+import { SearchPage } from '../search/SearchPage';
 
 const PAGE_SIZE = 100;
 
 export function AppLayout() {
     const activeChat = TARGET_CHAT;
     const [messages, setMessages] = useState<Message[]>([]);
-    const [currentView, setCurrentView] = useState<'chat' | 'import' | 'posts'>('chat');
+    const [currentView, setCurrentView] = useState<'chat' | 'import' | 'posts' | 'search'>('chat');
     const [offset, setOffset] = useState(0);
     const [hasOlder, setHasOlder] = useState(false);
     const [hasNewer, setHasNewer] = useState(false);
     const [totalCount, setTotalCount] = useState(0);
     const [isFetching, setIsFetching] = useState(false);
+    const [messageFocusRequest, setMessageFocusRequest] = useState<{ messageId: string; token: number } | null>(null);
+    const [postFocusRequest, setPostFocusRequest] = useState<{ postId: string; token: number } | null>(null);
+    const [cloudStatus, setCloudStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
 
     const fetchMessages = useCallback(
         (chatId: string, startOffset: number) => getMessagesPaginated(chatId, PAGE_SIZE, startOffset),
@@ -28,6 +32,9 @@ export function AppLayout() {
     // Initial messages or reset when chat changes
     useEffect(() => {
         const loadInitialMessages = async () => {
+            if (currentView !== 'chat' || messages.length > 0) {
+                return;
+            }
             setIsFetching(true);
             try {
                 const total = await getMessagesCount(activeChat.id);
@@ -46,7 +53,7 @@ export function AppLayout() {
         };
 
         loadInitialMessages();
-    }, [activeChat.id, currentView, fetchMessages]);
+    }, [activeChat.id, currentView, fetchMessages, messages.length]);
 
     const loadLatestMessages = async () => {
         if (isFetching) return;
@@ -146,12 +153,53 @@ export function AppLayout() {
         }
     };
 
+    const openMessageResult = (messageId: string) => {
+        setMessageFocusRequest({ messageId, token: Date.now() });
+        setCurrentView('chat');
+    };
+
+    const openPostResult = (postId: string) => {
+        setPostFocusRequest({ postId, token: Date.now() });
+        setCurrentView('posts');
+    };
+
+    const handleMessageFocusHandled = useCallback(() => {
+        setMessageFocusRequest(null);
+    }, []);
+
+    const handlePostFocusHandled = useCallback(() => {
+        setPostFocusRequest(null);
+    }, []);
+
+    useEffect(() => {
+        let isActive = true;
+        const timeoutId = window.setTimeout(async () => {
+            try {
+                const response = await fetch('/api/health', { cache: 'no-store' });
+                if (!isActive) return;
+                setCloudStatus(response.ok ? 'ready' : 'offline');
+            } catch {
+                if (isActive) {
+                    setCloudStatus('offline');
+                }
+            }
+        }, 0);
+
+        return () => {
+            isActive = false;
+            window.clearTimeout(timeoutId);
+        };
+    }, []);
+
     return (
         <div className={styles.container}>
             {/* Header for navigation */}
             <header className={styles.header}>
-                <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    Luciko
+                <div className={styles.brand}>
+                    <span className={styles.brandTitle}>Luciko</span>
+                    <span className={`${styles.cloudStatus} ${cloudStatus === 'ready' ? styles.cloudStatusReady : cloudStatus === 'offline' ? styles.cloudStatusOffline : styles.cloudStatusLoading}`}>
+                        {cloudStatus === 'ready' ? 'Cloud ready' : cloudStatus === 'offline' ? 'Offline mode' : 'Connecting'}
+                    </span>
                 </div>
                 <div className={styles.nav}>
                     <button
@@ -165,6 +213,12 @@ export function AppLayout() {
                         className={`${styles.navButton} ${currentView === 'posts' ? styles.navButtonActive : ''}`}
                     >
                         <Newspaper size={20} /> Posts
+                    </button>
+                    <button
+                        onClick={() => setCurrentView('search')}
+                        className={`${styles.navButton} ${currentView === 'search' ? styles.navButtonActive : ''}`}
+                    >
+                        <Search size={20} /> Search
                     </button>
                     <button
                         onClick={() => setCurrentView('import')}
@@ -187,11 +241,21 @@ export function AppLayout() {
                         hasNewer={hasNewer}
                         onJumpToLatest={loadLatestMessages}
                         onJumpToBookmark={jumpToMessage}
+                        focusRequest={messageFocusRequest}
+                        onFocusRequestHandled={handleMessageFocusHandled}
                     />
                 ) : currentView === 'import' ? (
                     <ImportPage />
+                ) : currentView === 'search' ? (
+                    <SearchPage
+                        onOpenMessage={openMessageResult}
+                        onOpenPost={openPostResult}
+                    />
                 ) : (
-                    <PostsPage />
+                    <PostsPage
+                        focusRequest={postFocusRequest}
+                        onFocusRequestHandled={handlePostFocusHandled}
+                    />
                 )}
             </div>
         </div>

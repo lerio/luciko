@@ -16,11 +16,13 @@ interface ChatAreaProps {
   hasNewer?: boolean;
   onJumpToLatest?: () => Promise<void> | void;
   onJumpToBookmark?: (messageId: string) => Promise<boolean>;
+  focusRequest?: { messageId: string; token: number } | null;
+  onFocusRequestHandled?: () => void;
 }
 
 const CURRENT_USER_ID = "Valerio Donati";
 
-export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOlder, hasNewer, onJumpToLatest, onJumpToBookmark }: ChatAreaProps) {
+export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOlder, hasNewer, onJumpToLatest, onJumpToBookmark, focusRequest, onFocusRequestHandled }: ChatAreaProps) {
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -89,13 +91,10 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   useEffect(() => {
     let isActive = true;
     if (!activeChat?.id) {
-      setBookmarkedMessageId(null);
-      setIsBookmarkReady(false);
-      setHiddenMessageIds(new Set());
-      setShowHidden(false);
-      return;
+      return () => {
+        isActive = false;
+      };
     }
-
     const loadToken = bookmarkLoadTokenRef.current + 1;
     bookmarkLoadTokenRef.current = loadToken;
 
@@ -165,12 +164,42 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     const target = document.getElementById(`message-${bookmarkedMessageId}`);
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "start" });
-    setIsBookmarkScrollPending(false);
+    requestAnimationFrame(() => setIsBookmarkScrollPending(false));
   }, [bookmarkedMessageId, isBookmarkScrollPending, messages.length]);
 
+  useEffect(() => {
+    if (!focusRequest?.messageId || !activeChat?.id || !onJumpToBookmark) return;
+
+    let isActive = true;
+    const jump = async () => {
+      setIsBookmarkScrollPending(true);
+      try {
+        const didJump = await onJumpToBookmark(focusRequest.messageId);
+        if (!isActive || !didJump) return;
+
+        const target = document.getElementById(`message-${focusRequest.messageId}`);
+        if (target) {
+          target.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        onFocusRequestHandled?.();
+      } finally {
+        if (isActive) {
+          setIsBookmarkScrollPending(false);
+        }
+      }
+    };
+
+    jump();
+    return () => {
+      isActive = false;
+    };
+  }, [activeChat?.id, focusRequest?.messageId, focusRequest?.token, onJumpToBookmark, onFocusRequestHandled]);
+
+  const chatId = activeChat?.id ?? null;
+
   const handleToggleHidden = useCallback(async (messageId: string) => {
-    if (!activeChat?.id) return;
-    const scope = `chat:${activeChat.id}`;
+    if (!chatId) return;
+    const scope = `chat:${chatId}`;
     const next = new Set(hiddenMessageIds);
     const isHidden = next.has(messageId);
     if (isHidden) {
@@ -184,7 +213,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     } catch (error) {
       console.warn("Failed to persist hidden message:", error);
     }
-  }, [activeChat?.id, hiddenMessageIds]);
+  }, [chatId, hiddenMessageIds]);
 
   const visibleMessages = useMemo(
     () => (showHidden ? messages : messages.filter((msg) => !hiddenMessageIds.has(msg.id))),
@@ -195,7 +224,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     if (visibleMessages.length === 0) {
       hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
       hiddenMarkerRef.current = null;
-      setStickyDateLabel(null);
+      requestAnimationFrame(() => setStickyDateLabel(null));
       return;
     }
 
@@ -214,7 +243,8 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
       if (markers.length === 0) {
         hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
         hiddenMarkerRef.current = null;
-        setStickyDateLabel(format(visibleMessages[0].timestamp, "MMMM d, yyyy"));
+        const nextLabel = format(visibleMessages[0].timestamp, "MMMM d, yyyy");
+        requestAnimationFrame(() => setStickyDateLabel(nextLabel));
         return;
       }
 
@@ -239,7 +269,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
         nextMarker.classList.add(messageListStyles.dateRowHidden);
       }
       hiddenMarkerRef.current = nextMarker;
-      setStickyDateLabel(nextLabel);
+      requestAnimationFrame(() => setStickyDateLabel(nextLabel));
     };
 
     const handleScroll = () => {

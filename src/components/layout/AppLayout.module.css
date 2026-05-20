@@ -36,6 +36,42 @@
   color: white;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brandTitle {
+  font-weight: 600;
+}
+
+.cloudStatus {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.cloudStatusReady {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+.cloudStatusOffline {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+}
+
+.cloudStatusLoading {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+}
+
 .nav {
   display: flex;
   gap: 15px;
