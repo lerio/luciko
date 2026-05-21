@@ -8,7 +8,7 @@ import { Upload, MessageSquare, Newspaper, Search } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 import { SearchPage } from '../search/SearchPage';
-import { hydrateLocalArchiveFromServer, pushLocalArchiveToServer } from '../../store/archiveSync';
+import { hydrateLocalArchiveFromServer } from '../../store/archiveSync';
 
 const PAGE_SIZE = 100;
 
@@ -37,27 +37,21 @@ export function AppLayout() {
         }
 
         try {
-            const total = await getMessagesCount(activeChat.id);
-            if (total === 0) {
-                const imported = await hydrateLocalArchiveFromServer();
-                if (!imported) {
-                    console.info('Archive sync: nothing available on the server yet.');
-                    return;
-                }
-
-                const refreshedTotal = await getMessagesCount(activeChat.id);
-                const msgs = await fetchMessages(activeChat.id, 0);
-                setMessages(msgs);
-                setOffset(0);
-                setTotalCount(refreshedTotal);
-                setHasOlder(false);
-                setHasNewer(msgs.length < refreshedTotal);
-                console.info(`Archive sync: hydrated ${refreshedTotal} messages from the server.`);
+            console.info('Archive sync: pulling from server');
+            const imported = await hydrateLocalArchiveFromServer();
+            if (!imported) {
+                console.info('Archive sync: nothing available on the server yet.');
                 return;
             }
 
-            await pushLocalArchiveToServer();
-            console.info(`Archive sync: pushed ${total} local messages to the server.`);
+            const refreshedTotal = await getMessagesCount(activeChat.id);
+            const msgs = await fetchMessages(activeChat.id, 0);
+            setMessages(msgs);
+            setOffset(0);
+            setTotalCount(refreshedTotal);
+            setHasOlder(false);
+            setHasNewer(msgs.length < refreshedTotal);
+            console.info(`Archive sync: hydrated ${refreshedTotal} messages from the server.`);
         } catch (error) {
             console.error('Failed to sync archive:', error);
         }
@@ -75,10 +69,6 @@ export function AppLayout() {
                 const total = await getMessagesCount(activeChat.id);
                 if (total === 0) {
                     await hydrateLocalArchiveFromServer();
-                } else {
-                    void pushLocalArchiveToServer().catch((syncError) => {
-                        console.warn('Failed to sync local archive to the server:', syncError);
-                    });
                 }
 
                 if (!isActive) {
