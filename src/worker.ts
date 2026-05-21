@@ -4,6 +4,12 @@ type Env = {
   };
   LUCIKO_BASIC_AUTH_PASSWORD?: string;
   LUCIKO_DB?: {
+    prepare: (sql: string) => {
+      bind: (...values: unknown[]) => {
+        run: () => Promise<unknown>;
+        all: <T = Record<string, unknown>>() => Promise<{ results: T[] }>;
+      };
+    };
     exec: (sql: string) => Promise<unknown>;
   };
   LUCIKO_BUCKET?: unknown;
@@ -31,6 +37,21 @@ CREATE TABLE IF NOT EXISTS sync_events (
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS archive_messages (
+  id TEXT PRIMARY KEY NOT NULL,
+  chat_id TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS archive_messages_chat_timestamp ON archive_messages (chat_id, timestamp);
+CREATE TABLE IF NOT EXISTS archive_posts (
+  id TEXT PRIMARY KEY NOT NULL,
+  timestamp INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS archive_posts_timestamp ON archive_posts (timestamp);
 `;
 
 async function ensureSchema(env: Env) {
@@ -42,6 +63,85 @@ async function ensureSchema(env: Env) {
     console.error('Failed to ensure schema', error);
     return false;
   }
+}
+
+type SerializedMessage = {
+  id: string;
+  chatId: string;
+  timestamp: string;
+  [key: string]: unknown;
+};
+
+type SerializedPost = {
+  id: string;
+  timestamp: number;
+  [key: string]: unknown;
+};
+
+type SyncPayload = {
+  messages?: SerializedMessage[];
+  posts?: SerializedPost[];
+};
+
+async function readArchive(env: Env) {
+  if (!env.LUCIKO_DB) {
+    return { messages: [], posts: [] };
+  }
+
+  const messageRows = await env.LUCIKO_DB
+    .prepare('SELECT payload FROM archive_messages ORDER BY timestamp ASC, id ASC')
+    .bind()
+    .all<{ payload: string }>();
+  const postRows = await env.LUCIKO_DB
+    .prepare('SELECT payload FROM archive_posts ORDER BY timestamp ASC, id ASC')
+    .bind()
+    .all<{ payload: string }>();
+
+  return {
+    messages: messageRows.results.map((row) => JSON.parse(row.payload) as SerializedMessage),
+    posts: postRows.results.map((row) => JSON.parse(row.payload) as SerializedPost),
+  };
+}
+
+async function writeArchive(env: Env, payload: SyncPayload) {
+  if (!env.LUCIKO_DB) {
+    return false;
+  }
+
+  const now = Date.now();
+  const messages = payload.messages ?? [];
+  const posts = payload.posts ?? [];
+
+  for (const message of messages) {
+    await env.LUCIKO_DB
+      .prepare(
+        `INSERT INTO archive_messages (id, chat_id, timestamp, payload, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           chat_id = excluded.chat_id,
+           timestamp = excluded.timestamp,
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(message.id, message.chatId, new Date(message.timestamp).getTime(), JSON.stringify(message), now)
+      .run();
+  }
+
+  for (const post of posts) {
+    await env.LUCIKO_DB
+      .prepare(
+        `INSERT INTO archive_posts (id, timestamp, payload, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           timestamp = excluded.timestamp,
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(post.id, post.timestamp, JSON.stringify(post), now)
+      .run();
+  }
+
+  return messages.length > 0 || posts.length > 0;
 }
 
 function timingSafeEqual(left: string, right: string) {
@@ -131,17 +231,18 @@ const worker = {
 
       if (url.pathname === '/api/sync' && request.method === 'GET') {
         const schemaReady = await ensureSchema(env);
+        const archive = await readArchive(env);
         return json({
           ok: true,
           route: '/api/sync',
-          supported: false,
           schemaReady,
-          message: 'Sync API scaffold is deployed. Full encrypted sync will be wired next.',
+          messages: archive.messages,
+          posts: archive.posts,
         });
       }
 
       if (url.pathname === '/api/sync' && request.method === 'POST') {
-        await ensureSchema(env);
+        const schemaReady = await ensureSchema(env);
 
         const contentType = request.headers.get('content-type') ?? '';
         if (!contentType.includes('application/json')) {
@@ -155,11 +256,11 @@ const worker = {
           return new Response('Invalid JSON body', { status: 400 });
         }
 
+        const accepted = await writeArchive(env, payload as SyncPayload);
         return json({
           ok: true,
-          accepted: false,
-          receivedType: typeof payload,
-          message: 'Push endpoint scaffold is live but not yet enabled for production sync.',
+          accepted,
+          schemaReady,
         });
       }
 

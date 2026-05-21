@@ -8,6 +8,7 @@ import { Upload, MessageSquare, Newspaper, Search } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 import { SearchPage } from '../search/SearchPage';
+import { hydrateLocalArchiveFromServer, pushLocalArchiveToServer } from '../../store/archiveSync';
 
 const PAGE_SIZE = 100;
 
@@ -31,6 +32,7 @@ export function AppLayout() {
 
     // Initial messages or reset when chat changes
     useEffect(() => {
+        let isActive = true;
         const loadInitialMessages = async () => {
             if (currentView !== 'chat' || messages.length > 0) {
                 return;
@@ -38,21 +40,39 @@ export function AppLayout() {
             setIsFetching(true);
             try {
                 const total = await getMessagesCount(activeChat.id);
+                if (total === 0) {
+                    await hydrateLocalArchiveFromServer();
+                } else {
+                    void pushLocalArchiveToServer().catch((syncError) => {
+                        console.warn('Failed to sync local archive to the server:', syncError);
+                    });
+                }
+
+                if (!isActive) {
+                    return;
+                }
+
+                const refreshedTotal = await getMessagesCount(activeChat.id);
                 const start = 0;
                 const msgs = await fetchMessages(activeChat.id, start);
                 setMessages(msgs);
                 setOffset(start);
-                setTotalCount(total);
+                setTotalCount(refreshedTotal);
                 setHasOlder(false);
-                setHasNewer(msgs.length < total);
+                setHasNewer(msgs.length < refreshedTotal);
             } catch (error) {
                 console.error('Failed to load initial messages:', error);
             } finally {
-                setIsFetching(false);
+                if (isActive) {
+                    setIsFetching(false);
+                }
             }
         };
 
         loadInitialMessages();
+        return () => {
+            isActive = false;
+        };
     }, [activeChat.id, currentView, fetchMessages, messages.length]);
 
     const loadLatestMessages = async () => {

@@ -10,6 +10,7 @@ import { parseOldGoogleChatCsv } from '../../importers/googlechat/oldCsv';
 import { parseIMessageJson } from '../../importers/imessage/parser';
 import { parseGmailZip } from '../../importers/gmail/parser';
 import { importMessages, importPosts } from '../../store/db';
+import { pushLocalArchiveToServer } from '../../store/archiveSync';
 import { TARGET_CHAT_ID } from '../../constants/chat';
 import styles from './ImportPage.module.css';
 
@@ -185,6 +186,10 @@ export function ImportPage() {
             } else {
                 importStats = await importMessages(result.messages);
             }
+
+            void pushLocalArchiveToServer().catch((syncError) => {
+                console.warn('Imported archive locally, but failed to sync it to the server:', syncError);
+            });
 
             setStats({
                 total: totalCount,
