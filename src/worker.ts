@@ -37,21 +37,6 @@ CREATE TABLE IF NOT EXISTS sync_events (
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS archive_messages (
-  id TEXT PRIMARY KEY NOT NULL,
-  chat_id TEXT NOT NULL,
-  timestamp INTEGER NOT NULL,
-  payload TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS archive_messages_chat_timestamp ON archive_messages (chat_id, timestamp);
-CREATE TABLE IF NOT EXISTS archive_posts (
-  id TEXT PRIMARY KEY NOT NULL,
-  timestamp INTEGER NOT NULL,
-  payload TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS archive_posts_timestamp ON archive_posts (timestamp);
 `;
 
 async function ensureSchema(env: Env) {
@@ -65,22 +50,9 @@ async function ensureSchema(env: Env) {
   }
 }
 
-type SerializedMessage = {
-  id: string;
-  chatId: string;
-  timestamp: string;
-  [key: string]: unknown;
-};
-
-type SerializedPost = {
-  id: string;
-  timestamp: number;
-  [key: string]: unknown;
-};
-
 type SyncPayload = {
-  messages?: SerializedMessage[];
-  posts?: SerializedPost[];
+  messages?: unknown[];
+  posts?: unknown[];
 };
 
 async function readArchive(env: Env) {
@@ -88,19 +60,25 @@ async function readArchive(env: Env) {
     return { messages: [], posts: [] };
   }
 
-  const messageRows = await env.LUCIKO_DB
-    .prepare('SELECT payload FROM archive_messages ORDER BY timestamp ASC, id ASC')
-    .bind()
-    .all<{ payload: string }>();
-  const postRows = await env.LUCIKO_DB
-    .prepare('SELECT payload FROM archive_posts ORDER BY timestamp ASC, id ASC')
-    .bind()
-    .all<{ payload: string }>();
+  const rows = await env.LUCIKO_DB
+    .prepare('SELECT value FROM sync_state WHERE id = ?')
+    .bind('archive_snapshot')
+    .all<{ value: string }>();
 
-  return {
-    messages: messageRows.results.map((row) => JSON.parse(row.payload) as SerializedMessage),
-    posts: postRows.results.map((row) => JSON.parse(row.payload) as SerializedPost),
-  };
+  if (rows.results.length === 0) {
+    return { messages: [], posts: [] };
+  }
+
+  try {
+    const parsed = JSON.parse(rows.results[0].value) as SyncPayload;
+    return {
+      messages: parsed.messages ?? [],
+      posts: parsed.posts ?? [],
+    };
+  } catch (error) {
+    console.error('Failed to parse archive snapshot', error);
+    return { messages: [], posts: [] };
+  }
 }
 
 async function writeArchive(env: Env, payload: SyncPayload) {
@@ -109,39 +87,23 @@ async function writeArchive(env: Env, payload: SyncPayload) {
   }
 
   const now = Date.now();
-  const messages = payload.messages ?? [];
-  const posts = payload.posts ?? [];
+  const snapshot = JSON.stringify({
+    messages: payload.messages ?? [],
+    posts: payload.posts ?? [],
+  });
 
-  for (const message of messages) {
-    await env.LUCIKO_DB
-      .prepare(
-        `INSERT INTO archive_messages (id, chat_id, timestamp, payload, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           chat_id = excluded.chat_id,
-           timestamp = excluded.timestamp,
-           payload = excluded.payload,
-           updated_at = excluded.updated_at`,
-      )
-      .bind(message.id, message.chatId, new Date(message.timestamp).getTime(), JSON.stringify(message), now)
-      .run();
-  }
+  await env.LUCIKO_DB
+    .prepare(
+      `INSERT INTO sync_state (id, value, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         value = excluded.value,
+         updated_at = excluded.updated_at`,
+    )
+    .bind('archive_snapshot', snapshot, now)
+    .run();
 
-  for (const post of posts) {
-    await env.LUCIKO_DB
-      .prepare(
-        `INSERT INTO archive_posts (id, timestamp, payload, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           timestamp = excluded.timestamp,
-           payload = excluded.payload,
-           updated_at = excluded.updated_at`,
-      )
-      .bind(post.id, post.timestamp, JSON.stringify(post), now)
-      .run();
-  }
-
-  return messages.length > 0 || posts.length > 0;
+  return true;
 }
 
 function timingSafeEqual(left: string, right: string) {

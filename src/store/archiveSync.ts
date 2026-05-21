@@ -90,7 +90,8 @@ export async function pushLocalArchiveToServer(): Promise<void> {
     });
 
     if (!response.ok) {
-        throw new Error(`Failed to push archive to server (${response.status})`);
+        const details = await response.text().catch(() => '');
+        throw new Error(`Failed to push archive to server (${response.status})${details ? `: ${details}` : ''}`);
     }
 }
 
@@ -101,7 +102,8 @@ export async function hydrateLocalArchiveFromServer(): Promise<boolean> {
     });
 
     if (!response.ok) {
-        throw new Error(`Failed to fetch archive from server (${response.status})`);
+        const details = await response.text().catch(() => '');
+        throw new Error(`Failed to fetch archive from server (${response.status})${details ? `: ${details}` : ''}`);
     }
 
     const payload = (await response.json()) as SyncResponse;
