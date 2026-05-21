@@ -31,6 +31,38 @@ export function AppLayout() {
         []
     );
 
+    const syncArchive = useCallback(async (force = false) => {
+        if (!force && currentView !== 'chat') {
+            return;
+        }
+
+        try {
+            const total = await getMessagesCount(activeChat.id);
+            if (total === 0) {
+                const imported = await hydrateLocalArchiveFromServer();
+                if (!imported) {
+                    console.info('Archive sync: nothing available on the server yet.');
+                    return;
+                }
+
+                const refreshedTotal = await getMessagesCount(activeChat.id);
+                const msgs = await fetchMessages(activeChat.id, 0);
+                setMessages(msgs);
+                setOffset(0);
+                setTotalCount(refreshedTotal);
+                setHasOlder(false);
+                setHasNewer(msgs.length < refreshedTotal);
+                console.info(`Archive sync: hydrated ${refreshedTotal} messages from the server.`);
+                return;
+            }
+
+            await pushLocalArchiveToServer();
+            console.info(`Archive sync: pushed ${total} local messages to the server.`);
+        } catch (error) {
+            console.error('Failed to sync archive:', error);
+        }
+    }, [activeChat.id, currentView, fetchMessages]);
+
     // Initial messages or reset when chat changes
     useEffect(() => {
         let isActive = true;
@@ -77,46 +109,14 @@ export function AppLayout() {
     }, [activeChat.id, currentView, fetchMessages, messages.length]);
 
     useEffect(() => {
-        let isActive = true;
+        const timeoutId = window.setTimeout(() => {
+            void syncArchive();
+        }, 0);
 
-        const syncArchive = async () => {
-            if (currentView !== 'chat') {
-                return;
-            }
-
-            try {
-                const total = await getMessagesCount(activeChat.id);
-                if (total === 0) {
-                    const imported = await hydrateLocalArchiveFromServer();
-                    if (!isActive || !imported) {
-                        return;
-                    }
-
-                    const refreshedTotal = await getMessagesCount(activeChat.id);
-                    const msgs = await fetchMessages(activeChat.id, 0);
-                    setMessages(msgs);
-                    setOffset(0);
-                    setTotalCount(refreshedTotal);
-                    setHasOlder(false);
-                    setHasNewer(msgs.length < refreshedTotal);
-                    return;
-                }
-
-                void pushLocalArchiveToServer().catch((syncError) => {
-                    console.warn('Failed to sync local archive to the server:', syncError);
-                });
-            } catch (error) {
-                if (isActive) {
-                    console.error('Failed to sync archive:', error);
-                }
-            }
-        };
-
-        syncArchive();
         return () => {
-            isActive = false;
+            window.clearTimeout(timeoutId);
         };
-    }, [activeChat.id, chatRefreshToken, currentView, fetchMessages]);
+    }, [chatRefreshToken, syncArchive]);
 
     const loadLatestMessages = async () => {
         if (isFetching) return;
@@ -270,6 +270,7 @@ export function AppLayout() {
                         onClick={() => {
                             setChatRefreshToken((token) => token + 1);
                             setCurrentView('chat');
+                            void syncArchive(true);
                         }}
                         className={`${styles.navButton} ${currentView === 'chat' ? styles.navButtonActive : ''}`}
                     >
