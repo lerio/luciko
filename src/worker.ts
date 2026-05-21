@@ -37,6 +37,21 @@ CREATE TABLE IF NOT EXISTS sync_events (
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS archive_messages (
+  id TEXT PRIMARY KEY NOT NULL,
+  chat_id TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS archive_messages_chat_timestamp ON archive_messages (chat_id, timestamp);
+CREATE TABLE IF NOT EXISTS archive_posts (
+  id TEXT PRIMARY KEY NOT NULL,
+  timestamp INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS archive_posts_timestamp ON archive_posts (timestamp);
 `;
 
 async function ensureSchema(env: Env) {
@@ -51,35 +66,11 @@ async function ensureSchema(env: Env) {
 }
 
 type SyncPayload = {
-  messages?: unknown[];
-  posts?: unknown[];
+  messages?: Array<Record<string, unknown>>;
+  posts?: Array<Record<string, unknown>>;
 };
 
-async function readArchive(env: Env) {
-  if (!env.LUCIKO_DB) {
-    return { messages: [], posts: [] };
-  }
-
-  const rows = await env.LUCIKO_DB
-    .prepare('SELECT value FROM sync_state WHERE id = ?')
-    .bind('archive_snapshot')
-    .all<{ value: string }>();
-
-  if (rows.results.length === 0) {
-    return { messages: [], posts: [] };
-  }
-
-  try {
-    const parsed = JSON.parse(rows.results[0].value) as SyncPayload;
-    return {
-      messages: parsed.messages ?? [],
-      posts: parsed.posts ?? [],
-    };
-  } catch (error) {
-    console.error('Failed to parse archive snapshot', error);
-    return { messages: [], posts: [] };
-  }
-}
+const PAGE_SIZE = 50;
 
 async function writeArchive(env: Env, payload: SyncPayload) {
   if (!env.LUCIKO_DB) {
@@ -87,21 +78,50 @@ async function writeArchive(env: Env, payload: SyncPayload) {
   }
 
   const now = Date.now();
-  const snapshot = JSON.stringify({
-    messages: payload.messages ?? [],
-    posts: payload.posts ?? [],
-  });
+  const messages = payload.messages ?? [];
+  const posts = payload.posts ?? [];
 
-  await env.LUCIKO_DB
-    .prepare(
-      `INSERT INTO sync_state (id, value, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         value = excluded.value,
-         updated_at = excluded.updated_at`,
-    )
-    .bind('archive_snapshot', snapshot, now)
-    .run();
+  for (const message of messages) {
+    const chatId = typeof message.chatId === 'string' ? message.chatId : '';
+    const id = typeof message.id === 'string' ? message.id : '';
+    const timestampValue = typeof message.timestamp === 'string' ? Date.parse(message.timestamp) : NaN;
+    if (!id || !chatId || Number.isNaN(timestampValue)) {
+      continue;
+    }
+
+    await env.LUCIKO_DB
+      .prepare(
+        `INSERT INTO archive_messages (id, chat_id, timestamp, payload, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           chat_id = excluded.chat_id,
+           timestamp = excluded.timestamp,
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(id, chatId, timestampValue, JSON.stringify(message), now)
+      .run();
+  }
+
+  for (const post of posts) {
+    const id = typeof post.id === 'string' ? post.id : '';
+    const timestamp = typeof post.timestamp === 'number' ? post.timestamp : NaN;
+    if (!id || Number.isNaN(timestamp)) {
+      continue;
+    }
+
+    await env.LUCIKO_DB
+      .prepare(
+        `INSERT INTO archive_posts (id, timestamp, payload, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           timestamp = excluded.timestamp,
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(id, timestamp, JSON.stringify(post), now)
+      .run();
+  }
 
   return true;
 }
@@ -193,13 +213,38 @@ const worker = {
 
       if (url.pathname === '/api/sync' && request.method === 'GET') {
         const schemaReady = await ensureSchema(env);
-        const archive = await readArchive(env);
+        const entity = url.searchParams.get('entity');
+        const offset = Math.max(0, Number(url.searchParams.get('offset') ?? '0') || 0);
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') ?? String(PAGE_SIZE)) || PAGE_SIZE));
+
+        if (entity === 'messages' || entity === 'posts') {
+          const table = entity === 'messages' ? 'archive_messages' : 'archive_posts';
+          const totalRows = await env.LUCIKO_DB
+            ?.prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+            .bind()
+            .all<{ count: number }>();
+          const rows = await env.LUCIKO_DB
+            ?.prepare(`SELECT payload FROM ${table} ORDER BY timestamp ASC, id ASC LIMIT ? OFFSET ?`)
+            .bind(limit, offset)
+            .all<{ payload: string }>();
+
+          return json({
+            ok: true,
+            route: '/api/sync',
+            schemaReady,
+            entity,
+            offset,
+            limit,
+            total: totalRows?.results[0]?.count ?? 0,
+            items: rows?.results.map((row) => JSON.parse(row.payload)) ?? [],
+          });
+        }
+
         return json({
           ok: true,
           route: '/api/sync',
           schemaReady,
-          messages: archive.messages,
-          posts: archive.posts,
+          entities: ['messages', 'posts'],
         });
       }
 

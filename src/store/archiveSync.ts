@@ -16,17 +16,22 @@ type SerializedPost = Omit<PostRecord, 'media'> & {
 };
 
 interface SyncPayload {
-    messages: SerializedMessage[];
-    posts: SerializedPost[];
+    messages?: SerializedMessage[];
+    posts?: SerializedPost[];
 }
 
-interface SyncResponse extends SyncPayload {
+interface SyncResponse {
     ok: boolean;
     schemaReady?: boolean;
+    entity?: 'messages' | 'posts';
+    offset?: number;
+    limit?: number;
+    total?: number;
+    items?: unknown[];
 }
 
 const SYNC_ENDPOINT = '/api/sync';
-const PAGE_SIZE = 250;
+const PAGE_SIZE = 50;
 
 const serializeMessage = (message: Message): SerializedMessage => ({
     ...message,
@@ -38,11 +43,14 @@ const serializeMessage = (message: Message): SerializedMessage => ({
     }),
 });
 
-const deserializeMessage = (message: SerializedMessage): Message => ({
-    ...message,
-    timestamp: new Date(message.timestamp),
-    attachments: message.attachments?.map((attachment) => ({ ...attachment })),
-});
+const deserializeMessage = (message: unknown): Message => {
+    const next = message as SerializedMessage;
+    return {
+        ...next,
+        timestamp: new Date(next.timestamp),
+        attachments: next.attachments?.map((attachment) => ({ ...attachment })),
+    };
+};
 
 const serializePost = (post: PostRecord): SerializedPost => ({
     ...post,
@@ -53,10 +61,13 @@ const serializePost = (post: PostRecord): SerializedPost => ({
     }),
 });
 
-const deserializePost = (post: SerializedPost): PostRecord => ({
-    ...post,
-    media: post.media?.map((media) => ({ ...media })),
-});
+const deserializePost = (post: unknown): PostRecord => {
+    const next = post as SerializedPost;
+    return {
+        ...next,
+        media: next.media?.map((media) => ({ ...media })),
+    };
+};
 
 async function readAllMessages(chatId: string): Promise<Message[]> {
     const total = await getMessagesCount(chatId);
@@ -78,49 +89,90 @@ export async function pushLocalArchiveToServer(): Promise<void> {
         return;
     }
 
-    const response = await fetch(SYNC_ENDPOINT, {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-            messages: messages.map(serializeMessage),
-            posts: posts.map(serializePost),
-        } satisfies SyncPayload),
-    });
+    for (let offset = 0; offset < messages.length; offset += PAGE_SIZE) {
+        const response = await fetch(SYNC_ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                messages: messages.slice(offset, offset + PAGE_SIZE).map(serializeMessage),
+            } satisfies SyncPayload),
+        });
 
-    if (!response.ok) {
-        const details = await response.text().catch(() => '');
-        throw new Error(`Failed to push archive to server (${response.status})${details ? `: ${details}` : ''}`);
+        if (!response.ok) {
+            const details = await response.text().catch(() => '');
+            throw new Error(`Failed to push archive to server (${response.status})${details ? `: ${details}` : ''}`);
+        }
+    }
+
+    for (let offset = 0; offset < posts.length; offset += PAGE_SIZE) {
+        const response = await fetch(SYNC_ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                posts: posts.slice(offset, offset + PAGE_SIZE).map(serializePost),
+            } satisfies SyncPayload),
+        });
+
+        if (!response.ok) {
+            const details = await response.text().catch(() => '');
+            throw new Error(`Failed to push archive to server (${response.status})${details ? `: ${details}` : ''}`);
+        }
     }
 }
 
 export async function hydrateLocalArchiveFromServer(): Promise<boolean> {
-    const response = await fetch(SYNC_ENDPOINT, {
-        method: 'GET',
-        cache: 'no-store',
+    const loadEntity = async <T>(
+        entity: 'messages' | 'posts',
+        deserialize: (item: unknown) => T,
+        importer: (items: T[]) => Promise<void>
+    ) => {
+        let offset = 0;
+        let total = Number.POSITIVE_INFINITY;
+
+        while (offset < total) {
+            const response = await fetch(`${SYNC_ENDPOINT}?entity=${entity}&limit=${PAGE_SIZE}&offset=${offset}`, {
+                method: 'GET',
+                cache: 'no-store',
+            });
+
+            if (!response.ok) {
+                const details = await response.text().catch(() => '');
+                throw new Error(`Failed to fetch archive from server (${response.status})${details ? `: ${details}` : ''}`);
+            }
+
+            const payload = (await response.json()) as SyncResponse;
+            const items = (payload.items ?? []).map(deserialize);
+            total = payload.total ?? items.length;
+            if (items.length === 0) {
+                break;
+            }
+            await importer(items);
+            offset += items.length;
+            if (items.length < PAGE_SIZE) {
+                break;
+            }
+        }
+    };
+
+    let imported = false;
+
+    await loadEntity('messages', deserializeMessage, async (items) => {
+        if (items.length > 0) {
+            imported = true;
+            await importMessages(items as Message[]);
+        }
     });
 
-    if (!response.ok) {
-        const details = await response.text().catch(() => '');
-        throw new Error(`Failed to fetch archive from server (${response.status})${details ? `: ${details}` : ''}`);
-    }
+    await loadEntity('posts', deserializePost, async (items) => {
+        if (items.length > 0) {
+            imported = true;
+            await importPosts(items as PostRecord[]);
+        }
+    });
 
-    const payload = (await response.json()) as SyncResponse;
-    const messages = payload.messages?.map(deserializeMessage) ?? [];
-    const posts = payload.posts?.map(deserializePost) ?? [];
-
-    if (messages.length === 0 && posts.length === 0) {
-        return false;
-    }
-
-    if (messages.length > 0) {
-        await importMessages(messages);
-    }
-
-    if (posts.length > 0) {
-        await importPosts(posts);
-    }
-
-    return true;
+    return imported;
 }
