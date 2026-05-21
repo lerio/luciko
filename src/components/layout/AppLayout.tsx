@@ -16,6 +16,7 @@ export function AppLayout() {
     const activeChat = TARGET_CHAT;
     const [messages, setMessages] = useState<Message[]>([]);
     const [currentView, setCurrentView] = useState<'chat' | 'import' | 'posts' | 'search'>('chat');
+    const [chatRefreshToken, setChatRefreshToken] = useState(0);
     const [offset, setOffset] = useState(0);
     const [hasOlder, setHasOlder] = useState(false);
     const [hasNewer, setHasNewer] = useState(false);
@@ -74,6 +75,48 @@ export function AppLayout() {
             isActive = false;
         };
     }, [activeChat.id, currentView, fetchMessages, messages.length]);
+
+    useEffect(() => {
+        let isActive = true;
+
+        const syncArchive = async () => {
+            if (currentView !== 'chat') {
+                return;
+            }
+
+            try {
+                const total = await getMessagesCount(activeChat.id);
+                if (total === 0) {
+                    const imported = await hydrateLocalArchiveFromServer();
+                    if (!isActive || !imported) {
+                        return;
+                    }
+
+                    const refreshedTotal = await getMessagesCount(activeChat.id);
+                    const msgs = await fetchMessages(activeChat.id, 0);
+                    setMessages(msgs);
+                    setOffset(0);
+                    setTotalCount(refreshedTotal);
+                    setHasOlder(false);
+                    setHasNewer(msgs.length < refreshedTotal);
+                    return;
+                }
+
+                void pushLocalArchiveToServer().catch((syncError) => {
+                    console.warn('Failed to sync local archive to the server:', syncError);
+                });
+            } catch (error) {
+                if (isActive) {
+                    console.error('Failed to sync archive:', error);
+                }
+            }
+        };
+
+        syncArchive();
+        return () => {
+            isActive = false;
+        };
+    }, [activeChat.id, chatRefreshToken, currentView, fetchMessages]);
 
     const loadLatestMessages = async () => {
         if (isFetching) return;
@@ -175,6 +218,7 @@ export function AppLayout() {
 
     const openMessageResult = (messageId: string) => {
         setMessageFocusRequest({ messageId, token: Date.now() });
+        setChatRefreshToken((token) => token + 1);
         setCurrentView('chat');
     };
 
@@ -223,7 +267,10 @@ export function AppLayout() {
                 </div>
                 <div className={styles.nav}>
                     <button
-                        onClick={() => setCurrentView('chat')}
+                        onClick={() => {
+                            setChatRefreshToken((token) => token + 1);
+                            setCurrentView('chat');
+                        }}
                         className={`${styles.navButton} ${currentView === 'chat' ? styles.navButtonActive : ''}`}
                     >
                         <MessageSquare size={20} /> Chat
