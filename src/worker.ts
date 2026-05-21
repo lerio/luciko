@@ -9,6 +9,8 @@ type Env = {
         run: () => Promise<unknown>;
         all: <T = Record<string, unknown>>() => Promise<{ results: T[] }>;
       };
+      run: () => Promise<unknown>;
+      all: <T = Record<string, unknown>>() => Promise<{ results: T[] }>;
     };
     exec: (sql: string) => Promise<unknown>;
   };
@@ -37,27 +39,37 @@ CREATE TABLE IF NOT EXISTS sync_events (
   payload TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS archive_messages (
-  id TEXT PRIMARY KEY NOT NULL,
-  chat_id TEXT NOT NULL,
-  timestamp INTEGER NOT NULL,
-  payload TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS archive_messages_chat_timestamp ON archive_messages (chat_id, timestamp);
-CREATE TABLE IF NOT EXISTS archive_posts (
-  id TEXT PRIMARY KEY NOT NULL,
-  timestamp INTEGER NOT NULL,
-  payload TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS archive_posts_timestamp ON archive_posts (timestamp);
 `;
 
 async function ensureSchema(env: Env) {
   if (!env.LUCIKO_DB) return false;
   try {
     await env.LUCIKO_DB.exec(SCHEMA_SQL);
+    await env.LUCIKO_DB.prepare(`
+      CREATE TABLE IF NOT EXISTS archive_messages (
+        id TEXT PRIMARY KEY NOT NULL,
+        chat_id TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `).run();
+    await env.LUCIKO_DB.prepare(`
+      CREATE INDEX IF NOT EXISTS archive_messages_chat_timestamp
+      ON archive_messages (chat_id, timestamp)
+    `).run();
+    await env.LUCIKO_DB.prepare(`
+      CREATE TABLE IF NOT EXISTS archive_posts (
+        id TEXT PRIMARY KEY NOT NULL,
+        timestamp INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `).run();
+    await env.LUCIKO_DB.prepare(`
+      CREATE INDEX IF NOT EXISTS archive_posts_timestamp
+      ON archive_posts (timestamp)
+    `).run();
     return true;
   } catch (error) {
     console.error('Failed to ensure schema', error);
@@ -213,6 +225,16 @@ const worker = {
 
       if (url.pathname === '/api/sync' && request.method === 'GET') {
         const schemaReady = await ensureSchema(env);
+        if (!schemaReady) {
+          return json(
+            {
+              ok: false,
+              error: 'Archive schema is not ready',
+              schemaReady,
+            },
+            { status: 503 },
+          );
+        }
         const entity = url.searchParams.get('entity');
         const offset = Math.max(0, Number(url.searchParams.get('offset') ?? '0') || 0);
         const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') ?? String(PAGE_SIZE)) || PAGE_SIZE));
@@ -250,6 +272,16 @@ const worker = {
 
       if (url.pathname === '/api/sync' && request.method === 'POST') {
         const schemaReady = await ensureSchema(env);
+        if (!schemaReady) {
+          return json(
+            {
+              ok: false,
+              error: 'Archive schema is not ready',
+              schemaReady,
+            },
+            { status: 503 },
+          );
+        }
 
         const contentType = request.headers.get('content-type') ?? '';
         if (!contentType.includes('application/json')) {
