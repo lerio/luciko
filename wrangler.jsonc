@@ -2,7 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "luciko",
   "compatibility_date": "2026-05-20",
-  "pages_build_output_dir": "dist",
+  "main": "src/worker.ts",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
   "d1_databases": [
     {
       "binding": "LUCIKO_DB",
