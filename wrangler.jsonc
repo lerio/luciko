@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "luciko",
+  "compatibility_date": "2026-05-20",
+  "pages_build_output_dir": "dist",
+  "d1_databases": [
+    {
+      "binding": "LUCIKO_DB",
+      "database_name": "luciko-db",
+      "database_id": "e47fdf8c-7817-4b03-b10f-9ee78b852030"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LUCIKO_BUCKET",
+      "bucket_name": "luciko-bucket"
+    }
+  ]
+}
