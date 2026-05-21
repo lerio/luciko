@@ -79,9 +79,18 @@ This repo is being prepared for Cloudflare Pages + Functions.
 Bindings expected by the API routes:
 - `LUCIKO_DB` for D1
 - `LUCIKO_BUCKET` for R2
+- `LUCIKO_BASIC_AUTH_PASSWORD` for HTTP Basic Auth
 
 Current routes:
 - `GET /api/health` checks whether the Cloudflare bindings are present and initializes the D1 schema if available.
 - `GET /api/sync` and `POST /api/sync` are scaffolds for the encrypted sync layer.
 
 The deployed target is a Cloudflare Worker with static assets, not Pages Functions.
+
+To set the auth secret:
+
+```bash
+npx wrangler secret put LUCIKO_BASIC_AUTH_PASSWORD
+```
+
+Use a long, unique password. After setting the secret, redeploy the Worker.

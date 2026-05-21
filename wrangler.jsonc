@@ -20,5 +20,10 @@
       "binding": "LUCIKO_BUCKET",
       "bucket_name": "luciko-bucket"
     }
-  ]
+  ],
+  "secrets": {
+    "required": [
+      "LUCIKO_BASIC_AUTH_PASSWORD"
+    ]
+  }
 }
