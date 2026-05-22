@@ -31,7 +31,13 @@ interface SyncResponse {
 }
 
 const SYNC_ENDPOINT = '/api/sync';
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 500;
+
+export type PushProgress = {
+    entity: 'messages' | 'posts';
+    uploaded: number;
+    total: number;
+};
 
 const serializeMessage = (message: Message): SerializedMessage => ({
     ...message,
@@ -69,58 +75,47 @@ const deserializePost = (post: unknown): PostRecord => {
     };
 };
 
-async function readAllMessages(chatId: string): Promise<Message[]> {
-    const total = await getMessagesCount(chatId);
-    const messages: Message[] = [];
-    for (let offset = 0; offset < total; offset += PAGE_SIZE) {
-        const batch = await getMessagesPaginated(chatId, PAGE_SIZE, offset);
-        messages.push(...batch);
+async function postBatch(payload: SyncPayload): Promise<void> {
+    const response = await fetch(SYNC_ENDPOINT, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+        const details = await response.text().catch(() => '');
+        throw new Error(`Failed to push archive to server (${response.status})${details ? `: ${details}` : ''}`);
     }
-    return messages;
 }
 
-export async function pushLocalArchiveToServer(): Promise<void> {
-    const [messages, posts] = await Promise.all([
-        readAllMessages(TARGET_CHAT_ID),
-        getPosts(),
-    ]);
+export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgress) => void): Promise<void> {
+    const messageTotal = await getMessagesCount(TARGET_CHAT_ID);
 
-    if (messages.length === 0 && posts.length === 0) {
-        return;
-    }
-
-    for (let offset = 0; offset < messages.length; offset += PAGE_SIZE) {
-        const response = await fetch(SYNC_ENDPOINT, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/json',
-            },
-            body: JSON.stringify({
-                messages: messages.slice(offset, offset + PAGE_SIZE).map(serializeMessage),
-            } satisfies SyncPayload),
+    for (let offset = 0; offset < messageTotal; offset += PAGE_SIZE) {
+        const messages = await getMessagesPaginated(TARGET_CHAT_ID, PAGE_SIZE, offset);
+        await postBatch({
+            messages: messages.map(serializeMessage),
         });
-
-        if (!response.ok) {
-            const details = await response.text().catch(() => '');
-            throw new Error(`Failed to push archive to server (${response.status})${details ? `: ${details}` : ''}`);
-        }
+        onProgress?.({
+            entity: 'messages',
+            uploaded: Math.min(offset + messages.length, messageTotal),
+            total: messageTotal,
+        });
     }
 
+    const posts = await getPosts();
     for (let offset = 0; offset < posts.length; offset += PAGE_SIZE) {
-        const response = await fetch(SYNC_ENDPOINT, {
-            method: 'POST',
-            headers: {
-                'content-type': 'application/json',
-            },
-            body: JSON.stringify({
-                posts: posts.slice(offset, offset + PAGE_SIZE).map(serializePost),
-            } satisfies SyncPayload),
+        const batch = posts.slice(offset, offset + PAGE_SIZE);
+        await postBatch({
+            posts: batch.map(serializePost),
         });
-
-        if (!response.ok) {
-            const details = await response.text().catch(() => '');
-            throw new Error(`Failed to push archive to server (${response.status})${details ? `: ${details}` : ''}`);
-        }
+        onProgress?.({
+            entity: 'posts',
+            uploaded: Math.min(offset + batch.length, posts.length),
+            total: posts.length,
+        });
     }
 }
 
