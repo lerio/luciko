@@ -37,6 +37,7 @@ export type PushProgress = {
     entity: 'messages' | 'posts';
     uploaded: number;
     total: number;
+    resumedFrom: number;
 };
 
 const serializeMessage = (message: Message): SerializedMessage => ({
@@ -90,10 +91,35 @@ async function postBatch(payload: SyncPayload): Promise<void> {
     }
 }
 
+async function getServerEntityTotal(entity: 'messages' | 'posts'): Promise<number> {
+    const response = await fetch(`${SYNC_ENDPOINT}?entity=${entity}&limit=1&offset=0`, {
+        method: 'GET',
+        cache: 'no-store',
+    });
+
+    if (!response.ok) {
+        const details = await response.text().catch(() => '');
+        throw new Error(`Failed to inspect server sync state (${response.status})${details ? `: ${details}` : ''}`);
+    }
+
+    const payload = (await response.json()) as SyncResponse;
+    return payload.total ?? 0;
+}
+
 export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgress) => void): Promise<void> {
     const messageTotal = await getMessagesCount(TARGET_CHAT_ID);
+    const messageStartOffset = Math.min(await getServerEntityTotal('messages'), messageTotal);
 
-    for (let offset = 0; offset < messageTotal; offset += PAGE_SIZE) {
+    if (messageStartOffset > 0) {
+        onProgress?.({
+            entity: 'messages',
+            uploaded: messageStartOffset,
+            total: messageTotal,
+            resumedFrom: messageStartOffset,
+        });
+    }
+
+    for (let offset = messageStartOffset; offset < messageTotal; offset += PAGE_SIZE) {
         const messages = await getMessagesPaginated(TARGET_CHAT_ID, PAGE_SIZE, offset);
         await postBatch({
             messages: messages.map(serializeMessage),
@@ -102,11 +128,23 @@ export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgr
             entity: 'messages',
             uploaded: Math.min(offset + messages.length, messageTotal),
             total: messageTotal,
+            resumedFrom: messageStartOffset,
         });
     }
 
     const posts = await getPosts();
-    for (let offset = 0; offset < posts.length; offset += PAGE_SIZE) {
+    const postStartOffset = Math.min(await getServerEntityTotal('posts'), posts.length);
+
+    if (postStartOffset > 0) {
+        onProgress?.({
+            entity: 'posts',
+            uploaded: postStartOffset,
+            total: posts.length,
+            resumedFrom: postStartOffset,
+        });
+    }
+
+    for (let offset = postStartOffset; offset < posts.length; offset += PAGE_SIZE) {
         const batch = posts.slice(offset, offset + PAGE_SIZE);
         await postBatch({
             posts: batch.map(serializePost),
@@ -115,6 +153,7 @@ export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgr
             entity: 'posts',
             uploaded: Math.min(offset + batch.length, posts.length),
             total: posts.length,
+            resumedFrom: postStartOffset,
         });
     }
 }

@@ -142,7 +142,10 @@ export function ImportPage() {
 
     const formatSyncProgress = (progress: PushProgress | null) => {
         if (!progress) return '';
-        return `Uploading ${progress.entity}: ${progress.uploaded.toLocaleString()} / ${progress.total.toLocaleString()}`;
+        const resumed = progress.resumedFrom > 0
+            ? ` (resumed from ${progress.resumedFrom.toLocaleString()})`
+            : '';
+        return `Uploading ${progress.entity}: ${progress.uploaded.toLocaleString()} / ${progress.total.toLocaleString()}${resumed}`;
     };
 
     const syncLocalArchive = async () => {
