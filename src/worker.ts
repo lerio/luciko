@@ -19,62 +19,26 @@ type Env = {
 
 const BASIC_AUTH_USER = 'luciko';
 
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS sync_state (
-  id TEXT PRIMARY KEY NOT NULL,
-  value TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS devices (
-  id TEXT PRIMARY KEY NOT NULL,
-  name TEXT NOT NULL,
-  public_key TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  last_seen_at INTEGER NOT NULL,
-  revoked_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS sync_events (
-  id TEXT PRIMARY KEY NOT NULL,
-  kind TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-);
-`;
-
-async function ensureSchema(env: Env) {
+async function hasTable(env: Env, tableName: string): Promise<boolean> {
   if (!env.LUCIKO_DB) return false;
   try {
-    await env.LUCIKO_DB.exec(SCHEMA_SQL);
-    await env.LUCIKO_DB.prepare(`
-      CREATE TABLE IF NOT EXISTS archive_messages (
-        id TEXT PRIMARY KEY NOT NULL,
-        chat_id TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        payload TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `).run();
-    await env.LUCIKO_DB.prepare(`
-      CREATE INDEX IF NOT EXISTS archive_messages_chat_timestamp
-      ON archive_messages (chat_id, timestamp)
-    `).run();
-    await env.LUCIKO_DB.prepare(`
-      CREATE TABLE IF NOT EXISTS archive_posts (
-        id TEXT PRIMARY KEY NOT NULL,
-        timestamp INTEGER NOT NULL,
-        payload TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `).run();
-    await env.LUCIKO_DB.prepare(`
-      CREATE INDEX IF NOT EXISTS archive_posts_timestamp
-      ON archive_posts (timestamp)
-    `).run();
-    return true;
+    const result = await env.LUCIKO_DB
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .bind(tableName)
+      .all<{ name: string }>();
+    return result.results.length > 0;
   } catch (error) {
-    console.error('Failed to ensure schema', error);
+    console.error(`Failed to inspect table ${tableName}`, error);
     return false;
   }
+}
+
+async function ensureSchema(env: Env) {
+  const [messagesReady, postsReady] = await Promise.all([
+    hasTable(env, 'archive_messages'),
+    hasTable(env, 'archive_posts'),
+  ]);
+  return messagesReady && postsReady;
 }
 
 type SyncPayload = {

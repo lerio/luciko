@@ -24,3 +24,6 @@ imports/*
 *.njsproj
 *.sln
 *.sw?
+
+# Wrangler
+.wrangler/*
