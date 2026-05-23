@@ -1,4 +1,4 @@
-import { getMessagesCount, getMessagesPaginated, getPosts, importMessages, importPosts } from './db';
+import { getMessagesCount, getMessagesPaginated, getPostsCount, getPostsPaginated, importMessages, importPosts } from './db';
 import { TARGET_CHAT_ID } from '../constants/chat';
 import type { Message } from '../types/chat';
 import type { PostRecord } from '../types/posts';
@@ -15,11 +15,6 @@ type SerializedPost = Omit<PostRecord, 'media'> & {
     media?: SerializedMedia[];
 };
 
-interface SyncPayload {
-    messages?: SerializedMessage[];
-    posts?: SerializedPost[];
-}
-
 interface SyncResponse {
     ok: boolean;
     schemaReady?: boolean;
@@ -28,6 +23,10 @@ interface SyncResponse {
     limit?: number;
     total?: number;
     items?: unknown[];
+}
+
+interface SyncDiffResponse extends SyncResponse {
+    chunks?: number[];
 }
 
 const SYNC_ENDPOINT = '/api/sync';
@@ -76,13 +75,23 @@ const deserializePost = (post: unknown): PostRecord => {
     };
 };
 
-async function postBatch(payload: SyncPayload): Promise<void> {
-    const response = await fetch(SYNC_ENDPOINT, {
+async function hashText(value: string): Promise<string> {
+    const bytes = new TextEncoder().encode(value);
+    const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(hashBuffer), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function postChunk(entity: 'messages' | 'posts', chunkIndex: number, items: Array<SerializedMessage | SerializedPost>): Promise<void> {
+    const response = await fetch(`${SYNC_ENDPOINT}/chunk`, {
         method: 'POST',
         headers: {
             'content-type': 'application/json',
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+            entity,
+            chunkIndex,
+            items,
+        }),
     });
 
     if (!response.ok) {
@@ -106,54 +115,99 @@ async function getServerEntityTotal(entity: 'messages' | 'posts'): Promise<numbe
     return payload.total ?? 0;
 }
 
+async function getChangedChunks(
+    entity: 'messages' | 'posts',
+    chunks: Array<{ chunkIndex: number; payload: string }>
+): Promise<Set<number>> {
+    if (chunks.length === 0) {
+        return new Set();
+    }
+
+    const response = await fetch(`${SYNC_ENDPOINT}/diff`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+            entity,
+            chunks: await Promise.all(chunks.map(async (chunk) => ({
+                chunkIndex: chunk.chunkIndex,
+                hash: await hashText(chunk.payload),
+            }))),
+        }),
+    });
+
+    if (!response.ok) {
+        const details = await response.text().catch(() => '');
+        throw new Error(`Failed to inspect server sync state (${response.status})${details ? `: ${details}` : ''}`);
+    }
+
+    const payload = (await response.json()) as SyncDiffResponse;
+    return new Set(payload.chunks ?? []);
+}
+
 export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgress) => void): Promise<void> {
     const messageTotal = await getMessagesCount(TARGET_CHAT_ID);
-    const messageStartOffset = Math.min(await getServerEntityTotal('messages'), messageTotal);
+    let uploadedMessages = Math.min(await getServerEntityTotal('messages'), messageTotal);
 
-    if (messageStartOffset > 0) {
+    if (uploadedMessages > 0) {
         onProgress?.({
             entity: 'messages',
-            uploaded: messageStartOffset,
+            uploaded: uploadedMessages,
             total: messageTotal,
-            resumedFrom: messageStartOffset,
+            resumedFrom: uploadedMessages,
         });
     }
 
-    for (let offset = messageStartOffset; offset < messageTotal; offset += PAGE_SIZE) {
+    for (let offset = 0; offset < messageTotal; offset += PAGE_SIZE) {
         const messages = await getMessagesPaginated(TARGET_CHAT_ID, PAGE_SIZE, offset);
-        await postBatch({
-            messages: messages.map(serializeMessage),
-        });
+        const serialized = messages.map(serializeMessage);
+        const chunkIndex = Math.floor(offset / PAGE_SIZE);
+        const changedChunks = await getChangedChunks('messages', [{
+            chunkIndex,
+            payload: JSON.stringify(serialized),
+        }]);
+        if (changedChunks.has(chunkIndex)) {
+            await postChunk('messages', chunkIndex, serialized);
+            uploadedMessages = Math.min(messageTotal, uploadedMessages + serialized.length);
+        }
         onProgress?.({
             entity: 'messages',
-            uploaded: Math.min(offset + messages.length, messageTotal),
+            uploaded: Math.min(uploadedMessages, messageTotal),
             total: messageTotal,
-            resumedFrom: messageStartOffset,
+            resumedFrom: 0,
         });
     }
 
-    const posts = await getPosts();
-    const postStartOffset = Math.min(await getServerEntityTotal('posts'), posts.length);
+    const postTotal = await getPostsCount();
+    let uploadedPosts = Math.min(await getServerEntityTotal('posts'), postTotal);
 
-    if (postStartOffset > 0) {
+    if (uploadedPosts > 0) {
         onProgress?.({
             entity: 'posts',
-            uploaded: postStartOffset,
-            total: posts.length,
-            resumedFrom: postStartOffset,
+            uploaded: uploadedPosts,
+            total: postTotal,
+            resumedFrom: uploadedPosts,
         });
     }
 
-    for (let offset = postStartOffset; offset < posts.length; offset += PAGE_SIZE) {
-        const batch = posts.slice(offset, offset + PAGE_SIZE);
-        await postBatch({
-            posts: batch.map(serializePost),
-        });
+    for (let offset = 0; offset < postTotal; offset += PAGE_SIZE) {
+        const posts = await getPostsPaginated(PAGE_SIZE, offset);
+        const serialized = posts.map(serializePost);
+        const chunkIndex = Math.floor(offset / PAGE_SIZE);
+        const changedChunks = await getChangedChunks('posts', [{
+            chunkIndex,
+            payload: JSON.stringify(serialized),
+        }]);
+        if (changedChunks.has(chunkIndex)) {
+            await postChunk('posts', chunkIndex, serialized);
+            uploadedPosts = Math.min(postTotal, uploadedPosts + serialized.length);
+        }
         onProgress?.({
             entity: 'posts',
-            uploaded: Math.min(offset + batch.length, posts.length),
-            total: posts.length,
-            resumedFrom: postStartOffset,
+            uploaded: Math.min(uploadedPosts, postTotal),
+            total: postTotal,
+            resumedFrom: 0,
         });
     }
 }
