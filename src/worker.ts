@@ -18,6 +18,73 @@ type Env = {
 };
 
 const BASIC_AUTH_USER = 'luciko';
+const AUTH_COOKIE = 'luciko_auth';
+const COOKIE_MAX_AGE = 31536000; // 1 year
+
+function parseCookies(header: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq >= 0) {
+      result[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
+    }
+  }
+  return result;
+}
+
+async function signToken(payload: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function createAuthToken(secret: string): Promise<string> {
+  const payload = JSON.stringify({ u: 'luciko', ts: Date.now() });
+  const payloadB64 = btoa(payload);
+  const sig = await signToken(payloadB64, secret);
+  return `${payloadB64}.${sig}`;
+}
+
+async function verifyToken(token: string, secret: string): Promise<boolean> {
+  const idx = token.lastIndexOf('.');
+  if (idx < 0) return false;
+  const payload = token.slice(0, idx);
+  const sig = token.slice(idx + 1);
+  const expectedSig = await signToken(payload, secret);
+  return timingSafeEqual(sig, expectedSig);
+}
+
+function setAuthCookie(response: Response, token: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set(
+    'Set-Cookie',
+    `${AUTH_COOKIE}=${token}; Path=/; SameSite=Lax; Secure; Max-Age=${COOKIE_MAX_AGE}`,
+  );
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function clearAuthCookie(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set('Set-Cookie', `${AUTH_COOKIE}=; Path=/; SameSite=Lax; Secure; Max-Age=0`);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 async function hasTable(env: Env, tableName: string): Promise<boolean> {
   if (!env.LUCIKO_DB) return false;
@@ -168,6 +235,39 @@ function isAuthenticated(request: Request, env: Env) {
   );
 }
 
+async function checkAuth(
+  request: Request,
+  env: Env,
+): Promise<{ authenticated: boolean; newToken?: string }> {
+  const secret = env.LUCIKO_BASIC_AUTH_PASSWORD;
+  if (!secret) return { authenticated: false };
+
+  // 1. Check signed cookie
+  const cookieHeader = request.headers.get('Cookie') || '';
+  const cookies = parseCookies(cookieHeader);
+  const cookieToken = cookies[AUTH_COOKIE];
+  if (cookieToken && (await verifyToken(cookieToken, secret))) {
+    return { authenticated: true };
+  }
+
+  // 2. Check Bearer token header
+  const authHeader = request.headers.get('Authorization') || '';
+  if (authHeader.startsWith('Bearer ')) {
+    const bearerToken = authHeader.slice(7);
+    if (await verifyToken(bearerToken, secret)) {
+      return { authenticated: true };
+    }
+  }
+
+  // 3. Fall back to Basic Auth
+  if (isAuthenticated(request, env)) {
+    const newToken = await createAuthToken(secret);
+    return { authenticated: true, newToken };
+  }
+
+  return { authenticated: false };
+}
+
 function authChallenge() {
   return new Response('Authentication required', {
     status: 401,
@@ -192,13 +292,37 @@ const worker = {
     try {
       const url = new URL(request.url);
 
-      if (!isAuthenticated(request, env)) {
+      // Logout — clears auth cookie, no auth required
+      if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
+        return clearAuthCookie(json({ ok: true }));
+      }
+
+      // Auth status — returns whether the request is authenticated without triggering browser dialog
+      if (url.pathname === '/api/auth/status' && request.method === 'GET') {
+        const statusAuth = await checkAuth(request, env);
+        if (!statusAuth.authenticated) {
+          return json({ authenticated: false }, { status: 401 });
+        }
+        const statusResponse = json({ authenticated: true });
+        if (statusAuth.newToken) {
+          return setAuthCookie(statusResponse, statusAuth.newToken);
+        }
+        return statusResponse;
+      }
+
+      // Auth gate for all other routes
+      const auth = await checkAuth(request, env);
+      if (!auth.authenticated) {
         return authChallenge();
       }
 
+      // Attach auth cookie to successful responses when Basic Auth was just used
+      const respond = (res: Response) =>
+        auth.newToken ? setAuthCookie(res, auth.newToken) : res;
+
       if (url.pathname === '/api/health' && request.method === 'GET') {
         const schemaReady = await ensureSchema(env);
-        return json({
+        return respond(json({
           ok: true,
           service: 'luciko',
           mode: 'worker',
@@ -207,7 +331,7 @@ const worker = {
             d1: Boolean(env.LUCIKO_DB),
             r2: Boolean(env.LUCIKO_BUCKET),
           },
-        });
+        }));
       }
 
       if (url.pathname === '/api/sync' && request.method === 'GET') {
@@ -544,7 +668,7 @@ const worker = {
         });
       }
 
-      return await env.ASSETS.fetch(request);
+      return respond(await env.ASSETS.fetch(request));
     } catch (error) {
       console.error('Worker request failed', error);
       return json(

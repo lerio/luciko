@@ -4,11 +4,12 @@ import { ChatArea } from './ChatArea';
 import { ImportPage } from '../import/ImportPage';
 import { PostsPage } from '../posts/PostsPage';
 import { getMessageOffsetInChat, getMessagesPaginated, getMessagesCount } from '../../store/db';
-import { Upload, MessageSquare, Newspaper, Search } from 'lucide-react';
+import { Upload, MessageSquare, Newspaper, Search, LogOut } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 import { SearchPage } from '../search/SearchPage';
 import { hydrateLocalArchiveFromServer } from '../../store/archiveSync';
+import { logout } from '../../store/auth';
 
 const PAGE_SIZE = 100;
 
@@ -299,6 +300,11 @@ export function AppLayout() {
         return () => window.clearTimeout(timeoutId);
     }, [syncStatus]);
 
+    const handleLogout = async () => {
+        await logout();
+        window.location.reload();
+    };
+
     return (
         <div className={styles.container}>
             {/* Header for navigation */}
@@ -342,6 +348,13 @@ export function AppLayout() {
                         className={`${styles.navButton} ${currentView === 'import' ? styles.navButtonActive : ''}`}
                     >
                         <Upload size={20} /> Import
+                    </button>
+                    <button
+                        onClick={handleLogout}
+                        className={styles.navButton}
+                        title="Log out"
+                    >
+                        <LogOut size={20} />
                     </button>
                 </div>
             </header>
