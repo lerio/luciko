@@ -159,17 +159,23 @@ export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgr
         });
     }
 
+    const messageChunks: Array<{ chunkIndex: number; payload: string; items: SerializedMessage[] }> = [];
     for (let offset = 0; offset < messageTotal; offset += PAGE_SIZE) {
         const messages = await getMessagesPaginated(TARGET_CHAT_ID, PAGE_SIZE, offset);
         const serialized = messages.map(serializeMessage);
-        const chunkIndex = Math.floor(offset / PAGE_SIZE);
-        const changedChunks = await getChangedChunks('messages', [{
-            chunkIndex,
+        messageChunks.push({
+            chunkIndex: Math.floor(offset / PAGE_SIZE),
             payload: JSON.stringify(serialized),
-        }]);
-        if (changedChunks.has(chunkIndex)) {
-            await postChunk('messages', chunkIndex, serialized);
-            uploadedMessages = Math.min(messageTotal, uploadedMessages + serialized.length);
+            items: serialized,
+        });
+    }
+
+    const changedMessageChunks = await getChangedChunks('messages', messageChunks);
+
+    for (const chunk of messageChunks) {
+        if (changedMessageChunks.has(chunk.chunkIndex)) {
+            await postChunk('messages', chunk.chunkIndex, chunk.items);
+            uploadedMessages = Math.min(messageTotal, uploadedMessages + chunk.items.length);
         }
         onProgress?.({
             entity: 'messages',
@@ -191,17 +197,23 @@ export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgr
         });
     }
 
+    const postChunks: Array<{ chunkIndex: number; payload: string; items: SerializedPost[] }> = [];
     for (let offset = 0; offset < postTotal; offset += PAGE_SIZE) {
         const posts = await getPostsPaginated(PAGE_SIZE, offset);
         const serialized = posts.map(serializePost);
-        const chunkIndex = Math.floor(offset / PAGE_SIZE);
-        const changedChunks = await getChangedChunks('posts', [{
-            chunkIndex,
+        postChunks.push({
+            chunkIndex: Math.floor(offset / PAGE_SIZE),
             payload: JSON.stringify(serialized),
-        }]);
-        if (changedChunks.has(chunkIndex)) {
-            await postChunk('posts', chunkIndex, serialized);
-            uploadedPosts = Math.min(postTotal, uploadedPosts + serialized.length);
+            items: serialized,
+        });
+    }
+
+    const changedPostChunks = await getChangedChunks('posts', postChunks);
+
+    for (const chunk of postChunks) {
+        if (changedPostChunks.has(chunk.chunkIndex)) {
+            await postChunk('posts', chunk.chunkIndex, chunk.items);
+            uploadedPosts = Math.min(postTotal, uploadedPosts + chunk.items.length);
         }
         onProgress?.({
             entity: 'posts',
@@ -212,13 +224,39 @@ export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgr
     }
 }
 
+const SYNC_PROGRESS_PREFIX = 'luciko_sync_';
+
+function getSyncCheckpoint(entity: string): number {
+    try {
+        return Number(localStorage.getItem(`${SYNC_PROGRESS_PREFIX}${entity}`)) || 0;
+    } catch {
+        return 0;
+    }
+}
+
+function setSyncCheckpoint(entity: string, offset: number): void {
+    try {
+        localStorage.setItem(`${SYNC_PROGRESS_PREFIX}${entity}`, String(offset));
+    } catch {
+        // localStorage may be unavailable; silently skip
+    }
+}
+
+function clearSyncCheckpoint(entity: string): void {
+    try {
+        localStorage.removeItem(`${SYNC_PROGRESS_PREFIX}${entity}`);
+    } catch {
+        // silently skip
+    }
+}
+
 export async function hydrateLocalArchiveFromServer(): Promise<boolean> {
     const loadEntity = async <T>(
         entity: 'messages' | 'posts',
         deserialize: (item: unknown) => T,
         importer: (items: T[]) => Promise<void>
     ) => {
-        let offset = 0;
+        let offset = getSyncCheckpoint(entity);
         let total = Number.POSITIVE_INFINITY;
 
         while (offset < total) {
@@ -240,27 +278,32 @@ export async function hydrateLocalArchiveFromServer(): Promise<boolean> {
             }
             await importer(items);
             offset += items.length;
+            setSyncCheckpoint(entity, offset);
             if (items.length < PAGE_SIZE) {
                 break;
             }
         }
+
+        clearSyncCheckpoint(entity);
     };
 
-    let imported = false;
+    let importedMessages = false;
+    let importedPosts = false;
 
-    await loadEntity('messages', deserializeMessage, async (items) => {
-        if (items.length > 0) {
-            imported = true;
-            await importMessages(items as Message[]);
-        }
-    });
+    await Promise.all([
+        loadEntity('messages', deserializeMessage, async (items) => {
+            if (items.length > 0) {
+                importedMessages = true;
+                await importMessages(items as Message[]);
+            }
+        }),
+        loadEntity('posts', deserializePost, async (items) => {
+            if (items.length > 0) {
+                importedPosts = true;
+                await importPosts(items as PostRecord[]);
+            }
+        }),
+    ]);
 
-    await loadEntity('posts', deserializePost, async (items) => {
-        if (items.length > 0) {
-            imported = true;
-            await importPosts(items as PostRecord[]);
-        }
-    });
-
-    return imported;
+    return importedMessages || importedPosts;
 }

@@ -134,13 +134,13 @@
 }
 
 .bookmarkButtonActive {
-  background: #008069;
+  background: var(--color-primary);
   color: #ffffff;
-  border-color: #008069;
+  border-color: var(--color-primary);
 }
 
 .bookmarkButtonActive:hover {
-  background: #008069;
+  background: var(--color-primary);
 }
 
 .bookmarkButtonActive svg {

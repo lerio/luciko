@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useReducer } from 'react';
 import type { Message } from '../../types/chat';
 import { ChatArea } from './ChatArea';
 import { ImportPage } from '../import/ImportPage';
@@ -12,19 +12,96 @@ import { hydrateLocalArchiveFromServer } from '../../store/archiveSync';
 
 const PAGE_SIZE = 100;
 
+interface PaginationState {
+    messages: Message[];
+    offset: number;
+    hasOlder: boolean;
+    hasNewer: boolean;
+    totalCount: number;
+    isFetching: boolean;
+}
+
+type PaginationAction =
+    | { type: 'SET_FETCHING'; fetching: boolean }
+    | { type: 'RESET'; msgs: Message[]; total: number }
+    | { type: 'LOADED_OLDER'; prevMessages: Message[]; nextOffset: number }
+    | { type: 'LOADED_NEWER'; prevMessages: Message[] }
+    | { type: 'JUMPED'; msgs: Message[]; start: number; total: number }
+    | { type: 'NO_MORE_OLDER' }
+    | { type: 'NO_MORE_NEWER' };
+
+function paginationReducer(state: PaginationState, action: PaginationAction): PaginationState {
+    switch (action.type) {
+        case 'SET_FETCHING':
+            return { ...state, isFetching: action.fetching };
+        case 'RESET':
+            return {
+                messages: action.msgs,
+                offset: 0,
+                hasOlder: false,
+                hasNewer: action.msgs.length < action.total,
+                totalCount: action.total,
+                isFetching: false,
+            };
+        case 'LOADED_OLDER': {
+            const existingIds = new Set(state.messages.map(m => m.id));
+            const uniqueNew = action.prevMessages.filter(m => !existingIds.has(m.id));
+            const merged = [...uniqueNew, ...state.messages];
+            return {
+                ...state,
+                messages: merged,
+                offset: action.nextOffset,
+                hasOlder: action.nextOffset > 0,
+                hasNewer: action.nextOffset + merged.length < state.totalCount,
+                isFetching: false,
+            };
+        }
+        case 'LOADED_NEWER': {
+            const existingIds = new Set(state.messages.map(m => m.id));
+            const uniqueNew = action.prevMessages.filter(m => !existingIds.has(m.id));
+            const merged = [...state.messages, ...uniqueNew];
+            return {
+                ...state,
+                messages: merged,
+                hasNewer: state.offset + merged.length < state.totalCount,
+                isFetching: false,
+            };
+        }
+        case 'JUMPED':
+            return {
+                messages: action.msgs,
+                offset: action.start,
+                hasOlder: action.start > 0,
+                hasNewer: action.start + action.msgs.length < action.total,
+                totalCount: action.total,
+                isFetching: false,
+            };
+        case 'NO_MORE_OLDER':
+            return { ...state, hasOlder: false, isFetching: false };
+        case 'NO_MORE_NEWER':
+            return { ...state, hasNewer: false, isFetching: false };
+    }
+}
+
+const initialPagination: PaginationState = {
+    messages: [],
+    offset: 0,
+    hasOlder: false,
+    hasNewer: false,
+    totalCount: 0,
+    isFetching: false,
+};
+
 export function AppLayout() {
     const activeChat = TARGET_CHAT;
-    const [messages, setMessages] = useState<Message[]>([]);
+    const [pagination, dispatch] = useReducer(paginationReducer, initialPagination);
+    const { messages, offset, hasOlder, hasNewer, isFetching } = pagination;
     const [currentView, setCurrentView] = useState<'chat' | 'import' | 'posts' | 'search'>('chat');
     const [chatRefreshToken, setChatRefreshToken] = useState(0);
-    const [offset, setOffset] = useState(0);
-    const [hasOlder, setHasOlder] = useState(false);
-    const [hasNewer, setHasNewer] = useState(false);
-    const [totalCount, setTotalCount] = useState(0);
-    const [isFetching, setIsFetching] = useState(false);
     const [messageFocusRequest, setMessageFocusRequest] = useState<{ messageId: string; token: number } | null>(null);
     const [postFocusRequest, setPostFocusRequest] = useState<{ postId: string; token: number } | null>(null);
     const [cloudStatus, setCloudStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
+    const [syncStatus, setSyncStatus] = useState<'syncing' | 'synced' | 'error' | null>(null);
 
     const fetchMessages = useCallback(
         (chatId: string, startOffset: number) => getMessagesPaginated(chatId, PAGE_SIZE, startOffset),
@@ -37,34 +114,34 @@ export function AppLayout() {
         }
 
         try {
+            setSyncStatus('syncing');
             console.info('Archive sync: pulling from server');
             const imported = await hydrateLocalArchiveFromServer();
             if (!imported) {
                 console.info('Archive sync: nothing available on the server yet.');
+                setSyncStatus('synced');
                 return;
             }
 
             const refreshedTotal = await getMessagesCount(activeChat.id);
             const msgs = await fetchMessages(activeChat.id, 0);
-            setMessages(msgs);
-            setOffset(0);
-            setTotalCount(refreshedTotal);
-            setHasOlder(false);
-            setHasNewer(msgs.length < refreshedTotal);
+            dispatch({ type: 'RESET', msgs, total: refreshedTotal });
             console.info(`Archive sync: hydrated ${refreshedTotal} messages from the server.`);
+            setSyncStatus('synced');
         } catch (error) {
             console.error('Failed to sync archive:', error);
+            setSyncStatus('error');
         }
     }, [activeChat.id, currentView, fetchMessages]);
 
-    // Initial messages or reset when chat changes
+    // Initial messages load
     useEffect(() => {
         let isActive = true;
         const loadInitialMessages = async () => {
             if (currentView !== 'chat' || messages.length > 0) {
                 return;
             }
-            setIsFetching(true);
+            dispatch({ type: 'SET_FETCHING', fetching: true });
             try {
                 const total = await getMessagesCount(activeChat.id);
                 if (total === 0) {
@@ -76,18 +153,12 @@ export function AppLayout() {
                 }
 
                 const refreshedTotal = await getMessagesCount(activeChat.id);
-                const start = 0;
-                const msgs = await fetchMessages(activeChat.id, start);
-                setMessages(msgs);
-                setOffset(start);
-                setTotalCount(refreshedTotal);
-                setHasOlder(false);
-                setHasNewer(msgs.length < refreshedTotal);
+                const msgs = await fetchMessages(activeChat.id, 0);
+                dispatch({ type: 'RESET', msgs, total: refreshedTotal });
             } catch (error) {
                 console.error('Failed to load initial messages:', error);
-            } finally {
                 if (isActive) {
-                    setIsFetching(false);
+                    dispatch({ type: 'SET_FETCHING', fetching: false });
                 }
             }
         };
@@ -110,99 +181,76 @@ export function AppLayout() {
 
     const loadLatestMessages = async () => {
         if (isFetching) return;
-        setIsFetching(true);
+        dispatch({ type: 'SET_FETCHING', fetching: true });
         try {
             const total = await getMessagesCount(activeChat.id);
             const start = Math.max(0, total - PAGE_SIZE);
             const latest = await fetchMessages(activeChat.id, start);
-            setMessages(latest);
-            setOffset(start);
-            setTotalCount(total);
-            setHasOlder(start > 0);
-            setHasNewer(start + latest.length < total);
+            dispatch({ type: 'JUMPED', msgs: latest, start, total });
         } catch (error) {
             console.error('Failed to load latest messages:', error);
-        } finally {
-            setIsFetching(false);
+            dispatch({ type: 'SET_FETCHING', fetching: false });
         }
     };
 
     const loadOlderMessages = async () => {
         if (!hasOlder || isFetching) return 0;
 
-        setIsFetching(true);
+        dispatch({ type: 'SET_FETCHING', fetching: true });
         try {
             const nextOffset = Math.max(0, offset - PAGE_SIZE);
             const nextBatch = await fetchMessages(activeChat.id, nextOffset);
             if (nextBatch.length > 0) {
-                setMessages(prev => {
-                    const existingIds = new Set(prev.map(m => m.id));
-                    const uniqueNew = nextBatch.filter(m => !existingIds.has(m.id));
-                    return [...uniqueNew, ...prev];
-                });
-                setOffset(nextOffset);
-                setHasOlder(nextOffset > 0);
-                setHasNewer(nextOffset + nextBatch.length + messages.length < totalCount);
+                dispatch({ type: 'LOADED_OLDER', prevMessages: nextBatch, nextOffset });
                 return nextBatch.length;
             }
-            setHasOlder(false);
+            dispatch({ type: 'NO_MORE_OLDER' });
             return 0;
         } catch (error) {
             console.error('Failed to load more messages:', error);
+            dispatch({ type: 'SET_FETCHING', fetching: false });
             return 0;
-        } finally {
-            setIsFetching(false);
         }
     };
 
     const loadNewerMessages = async () => {
         if (!hasNewer || isFetching) return 0;
 
-        setIsFetching(true);
+        dispatch({ type: 'SET_FETCHING', fetching: true });
         try {
             const start = offset + messages.length;
             const nextBatch = await fetchMessages(activeChat.id, start);
             if (nextBatch.length > 0) {
-                setMessages(prev => {
-                    const existingIds = new Set(prev.map(m => m.id));
-                    const uniqueNew = nextBatch.filter(m => !existingIds.has(m.id));
-                    return [...prev, ...uniqueNew];
-                });
-                setHasNewer(start + nextBatch.length < totalCount);
+                dispatch({ type: 'LOADED_NEWER', prevMessages: nextBatch });
                 return nextBatch.length;
             }
-            setHasNewer(false);
+            dispatch({ type: 'NO_MORE_NEWER' });
             return 0;
         } catch (error) {
             console.error('Failed to load newer messages:', error);
+            dispatch({ type: 'SET_FETCHING', fetching: false });
             return 0;
-        } finally {
-            setIsFetching(false);
         }
     };
 
     const jumpToMessage = async (messageId: string): Promise<boolean> => {
         if (isFetching) return false;
-        setIsFetching(true);
+        dispatch({ type: 'SET_FETCHING', fetching: true });
         try {
             const position = await getMessageOffsetInChat(activeChat.id, messageId);
             if (position === null) {
+                dispatch({ type: 'SET_FETCHING', fetching: false });
                 return false;
             }
             const total = await getMessagesCount(activeChat.id);
             const start = Math.max(0, Math.min(position - Math.floor(PAGE_SIZE / 2), Math.max(0, total - PAGE_SIZE)));
             const msgs = await fetchMessages(activeChat.id, start);
-            setMessages(msgs);
-            setOffset(start);
-            setTotalCount(total);
-            setHasOlder(start > 0);
-            setHasNewer(start + msgs.length < total);
+            dispatch({ type: 'JUMPED', msgs, start, total });
             return true;
         } catch (error) {
             console.error('Failed to jump to message:', error);
+            dispatch({ type: 'SET_FETCHING', fetching: false });
             return false;
-        } finally {
-            setIsFetching(false);
         }
     };
 
@@ -245,6 +293,12 @@ export function AppLayout() {
         };
     }, []);
 
+    useEffect(() => {
+        if (!syncStatus) return;
+        const timeoutId = window.setTimeout(() => setSyncStatus(null), 5000);
+        return () => window.clearTimeout(timeoutId);
+    }, [syncStatus]);
+
     return (
         <div className={styles.container}>
             {/* Header for navigation */}
@@ -254,6 +308,11 @@ export function AppLayout() {
                     <span className={`${styles.cloudStatus} ${cloudStatus === 'ready' ? styles.cloudStatusReady : cloudStatus === 'offline' ? styles.cloudStatusOffline : styles.cloudStatusLoading}`}>
                         {cloudStatus === 'ready' ? 'Cloud ready' : cloudStatus === 'offline' ? 'Offline mode' : 'Connecting'}
                     </span>
+                    {syncStatus && (
+                        <span className={`${styles.syncStatus} ${syncStatus === 'error' ? styles.syncStatusError : styles.syncStatusSuccess}`}>
+                            {syncStatus === 'syncing' ? 'Syncing...' : syncStatus === 'synced' ? 'Synced' : 'Sync failed'}
+                        </span>
+                    )}
                 </div>
                 <div className={styles.nav}>
                     <button

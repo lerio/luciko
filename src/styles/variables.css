@@ -1,6 +1,7 @@
 :root {
   /* Colors */
   --color-primary: #008069;
+  --color-primary-rgb: 0, 128, 105;
   --color-secondary: #00a884;
   --color-bg-default: #d1d7db;
   --color-bg-app: #f0f2f5;

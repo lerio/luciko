@@ -29,3 +29,18 @@ export interface Chat {
     isGroup: boolean;
     avatarUrl?: string;
 }
+
+export function validateMessage(input: unknown): Message {
+    if (!input || typeof input !== 'object') {
+        throw new Error('Invalid message: expected object');
+    }
+    const m = input as Record<string, unknown>;
+    if (typeof m.id !== 'string' || !m.id) throw new Error('Invalid message: missing or invalid id');
+    if (typeof m.chatId !== 'string' || !m.chatId) throw new Error('Invalid message: missing or invalid chatId');
+    if (typeof m.senderId !== 'string') throw new Error('Invalid message: missing senderId');
+    if (typeof m.content !== 'string') throw new Error('Invalid message: missing content');
+    if (!(m.timestamp instanceof Date) && typeof m.timestamp !== 'string') {
+        throw new Error('Invalid message: timestamp must be Date or ISO string');
+    }
+    return m as unknown as Message;
+}

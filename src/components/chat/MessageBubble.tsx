@@ -191,48 +191,7 @@ function AttachmentPreview({ attachment }: AttachmentPreviewProps) {
   return <div className={styles.attachmentWrapper}>{attachmentContent}</div>;
 }
 
-export function MessageBubble({
-  message,
-  isMe,
-  isBookmarked,
-  isHidden,
-  onBookmark,
-  onToggleHidden,
-}: MessageBubbleProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const content = normalizeMojibakeText(message.content) ?? message.content;
-  const senderName = normalizeMojibakeText(message.senderId) ?? message.senderId;
-  const quotedText = normalizeMojibakeText(message.quotedText);
-  const quotedSender = normalizeMojibakeText(message.quotedSender);
-  const hasAudioAttachment = Boolean(
-    message.attachments?.some((attachment) => attachment.type === "audio"),
-  );
-  const shouldTruncate = content.length > TRUNCATE_LIMIT && !isExpanded;
-  const displayContent = shouldTruncate
-    ? content.substring(0, TRUNCATE_LIMIT) + "..."
-    : content;
-  const sourceLogo = (() => {
-    switch (message.source) {
-      case "whatsapp":
-        return { src: whatsappLogo, alt: "WhatsApp" };
-      case "facebook":
-        return { src: facebookLogo, alt: "Facebook Messenger" };
-      case "instagram":
-        return { src: instagramLogo, alt: "Instagram" };
-      case "googlechat":
-        return { src: googleChatLogo, alt: "Google Chat" };
-      case "googlechat_old":
-        return { src: googleChatLogo, alt: "Google Chat" };
-      case "imessage":
-        return { src: imessageLogo, alt: "iMessage" };
-      case "gmail":
-        return { src: gmailLogo, alt: "Gmail" };
-      default:
-        return null;
-    }
-  })();
-
-  const renderContent = (content: string, isGmail: boolean) => {
+function renderContent(content: string, isGmail: boolean) {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const gmailGoomojiTokenRegex =
       /(https:\/\/mail\.google\.com\/mail\/e\/[A-Za-z0-9]{3})/g;
@@ -368,7 +327,49 @@ export function MessageBubble({
 
     const lines = content.split("\n");
     return renderLines(lines, "default");
-  };
+}
+
+export function MessageBubble({
+  message,
+  isMe,
+  isBookmarked,
+  isHidden,
+  onBookmark,
+  onToggleHidden,
+}: MessageBubbleProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const content = normalizeMojibakeText(message.content) ?? message.content;
+  const senderName = normalizeMojibakeText(message.senderId) ?? message.senderId;
+  const quotedText = normalizeMojibakeText(message.quotedText);
+  const quotedSender = normalizeMojibakeText(message.quotedSender);
+  const hasAudioAttachment = Boolean(
+    message.attachments?.some((attachment) => attachment.type === "audio"),
+  );
+  const shouldTruncate = content.length > TRUNCATE_LIMIT && !isExpanded;
+  const displayContent = shouldTruncate
+    ? content.substring(0, TRUNCATE_LIMIT) + "..."
+    : content;
+  const sourceLogo = (() => {
+    switch (message.source) {
+      case "whatsapp":
+        return { src: whatsappLogo, alt: "WhatsApp" };
+      case "facebook":
+        return { src: facebookLogo, alt: "Facebook Messenger" };
+      case "instagram":
+        return { src: instagramLogo, alt: "Instagram" };
+      case "googlechat":
+        return { src: googleChatLogo, alt: "Google Chat" };
+      case "googlechat_old":
+        return { src: googleChatLogo, alt: "Google Chat" };
+      case "imessage":
+        return { src: imessageLogo, alt: "iMessage" };
+      case "gmail":
+        return { src: gmailLogo, alt: "Gmail" };
+      default:
+        return null;
+    }
+  })();
+
 
   return (
     <div
@@ -468,8 +469,8 @@ export function MessageBubble({
             <div
               className={`${styles.reactionsRow} ${isMe ? styles.reactionsRowMe : styles.reactionsRowOther}`}
             >
-              {message.reactions.map((reaction) => (
-                <div key={reaction.emoji} className={styles.reactionChip}>
+              {message.reactions.map((reaction, index) => (
+                <div key={`${reaction.emoji}-${index}`} className={styles.reactionChip}>
                   <span className={styles.reactionEmoji}>{reaction.emoji}</span>
                   {reaction.count > 1 && (
                     <span className={styles.reactionCount}>

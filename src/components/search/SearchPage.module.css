@@ -8,7 +8,7 @@
   flex-direction: column;
   align-items: center;
   background:
-    radial-gradient(circle at top left, rgba(0, 128, 105, 0.08), transparent 28%),
+    radial-gradient(circle at top left, rgba(var(--color-primary-rgb), 0.08), transparent 28%),
     radial-gradient(circle at top right, rgba(15, 23, 42, 0.05), transparent 22%),
     var(--color-bg-app);
 }
@@ -68,8 +68,8 @@
 }
 
 .searchInput:focus {
-  border-color: #008069;
-  box-shadow: 0 0 0 3px rgba(0, 128, 105, 0.12);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.12);
 }
 
 .scopeGroup {
@@ -88,9 +88,9 @@
 }
 
 .scopeButtonActive {
-  background: #008069;
+  background: var(--color-primary);
   color: #ffffff;
-  border-color: #008069;
+  border-color: var(--color-primary);
 }
 
 .content {
@@ -151,8 +151,8 @@
 }
 
 .resultCard:hover {
-  border-color: rgba(0, 128, 105, 0.35);
-  box-shadow: 0 12px 24px rgba(0, 128, 105, 0.1);
+  border-color: rgba(var(--color-primary-rgb), 0.35);
+  box-shadow: 0 12px 24px rgba(var(--color-primary-rgb), 0.1);
 }
 
 .resultMeta {
@@ -169,8 +169,8 @@
   align-items: center;
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(0, 128, 105, 0.08);
-  color: #008069;
+  background: rgba(var(--color-primary-rgb), 0.08);
+  color: var(--color-primary);
   font-weight: 600;
 }
 

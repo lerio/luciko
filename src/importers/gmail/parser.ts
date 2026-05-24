@@ -178,23 +178,29 @@ export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip
 
         const attachments: Attachment[] = [];
         const attachmentPaths = splitAttachmentPaths(attachmentPathRaw);
-        for (const rawPath of attachmentPaths) {
-            const resolvedPath = resolveAttachmentPath(rawPath, baseDir, zipPathLookup, zipEntryPathKeys);
-            const zipEntry = resolvedPath ? zip.file(resolvedPath) : null;
-            if (!zipEntry) {
-                logs.push(`Missing attachment file: ${rawPath}`);
-                continue;
-            }
-            const blob = await zipEntry.async('blob');
-            const fileName = resolvedPath!.split('/').pop() || resolvedPath!;
-            attachments.push({
-                id: uuidv4(),
-                type: getAttachmentType(fileName),
-                fileName,
-                mimeType: blob.type,
-                size: blob.size,
-                file: blob
+        const attachmentPromises = attachmentPaths
+            .map(async (rawPath) => {
+                const resolvedPath = resolveAttachmentPath(rawPath, baseDir, zipPathLookup, zipEntryPathKeys);
+                const zipEntry = resolvedPath ? zip.file(resolvedPath) : null;
+                if (!zipEntry) {
+                    logs.push(`Missing attachment file: ${rawPath}`);
+                    return null;
+                }
+                const blob = await zipEntry.async('blob');
+                const fileName = resolvedPath!.split('/').pop() || resolvedPath!;
+                return {
+                    id: uuidv4(),
+                    type: getAttachmentType(fileName),
+                    fileName,
+                    mimeType: blob.type,
+                    size: blob.size,
+                    file: blob
+                } as Attachment;
             });
+
+        const resolved = await Promise.all(attachmentPromises);
+        for (const att of resolved) {
+            if (att) attachments.push(att);
         }
 
         if (!content && attachments.length === 0) {

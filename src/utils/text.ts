@@ -18,15 +18,26 @@ const applyReplacementFixes = (value: string): string => (
         .replace('mi faccio il caffè, v�', 'mi faccio il caffè, và')
 );
 
+const mojibakeCache = new Map<string, string | null>();
+
 export function normalizeMojibakeText(value?: string): string | undefined {
     if (!value) return value;
+
+    const cached = mojibakeCache.get(value);
+    if (cached !== undefined) {
+        return cached ?? undefined;
+    }
 
     const needsFix =
         /[\u0080-\u00bf]/.test(value) ||
         /[ÃÂâå][\u0080-\u00bf]/.test(value) ||
         value.includes('�');
-    if (!needsFix) return value;
+    if (!needsFix) {
+        mojibakeCache.set(value, value);
+        return value;
+    }
 
+    let result: string;
     try {
         let best = value;
         let bestScore = mojibakeScore(value);
@@ -42,8 +53,10 @@ export function normalizeMojibakeText(value?: string): string | undefined {
             if (score === 0) break;
         }
 
-        return applyReplacementFixes(best);
+        result = applyReplacementFixes(best);
     } catch {
-        return applyReplacementFixes(value);
+        result = applyReplacementFixes(value);
     }
+    mojibakeCache.set(value, result);
+    return result;
 }

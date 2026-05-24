@@ -301,7 +301,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     }
 
     return () => observer.disconnect();
-  }, [handleLoadOlder, hasOlder, messages.length, onLoadOlder]); // Re-observe when messages change
+  }, [handleLoadOlder, hasOlder, onLoadOlder]);
 
   useEffect(() => {
     if (!onLoadNewer || !hasNewer) return;
@@ -318,7 +318,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     }
 
     return () => observer.disconnect();
-  }, [handleLoadNewer, hasNewer, messages.length, onLoadNewer]);
+  }, [handleLoadNewer, hasNewer, onLoadNewer]);
   if (!activeChat) {
     return (
       <main

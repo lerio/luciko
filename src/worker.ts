@@ -33,13 +33,19 @@ async function hasTable(env: Env, tableName: string): Promise<boolean> {
   }
 }
 
+let schemaReadyCache: boolean | null = null;
+
 async function ensureSchema(env: Env) {
+  if (schemaReadyCache !== null) {
+    return schemaReadyCache;
+  }
   const [messagesReady, postsReady, chunksReady] = await Promise.all([
     hasTable(env, 'archive_messages'),
     hasTable(env, 'archive_posts'),
     hasTable(env, 'archive_chunks'),
   ]);
-  return messagesReady && postsReady && chunksReady;
+  schemaReadyCache = messagesReady && postsReady && chunksReady;
+  return schemaReadyCache;
 }
 
 type SyncPayload = {
@@ -55,6 +61,7 @@ type SyncDiffPayload = {
 
 const PAGE_SIZE = 50;
 const ARCHIVE_CHUNK_SIZE = 500;
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10MB
 
 async function hashText(value: string) {
   const bytes = new TextEncoder().encode(value);
@@ -322,6 +329,10 @@ const worker = {
           return new Response('Invalid JSON body', { status: 400 });
         }
 
+        if (new TextEncoder().encode(JSON.stringify(payload)).length > MAX_BODY_BYTES) {
+          return new Response('Request body too large', { status: 413 });
+        }
+
         const accepted = await writeArchive(env, payload as SyncPayload);
         return json({
           ok: true,
@@ -359,6 +370,10 @@ const worker = {
           return new Response('Invalid JSON body', { status: 400 });
         }
 
+        if (new TextEncoder().encode(JSON.stringify(payload)).length > MAX_BODY_BYTES) {
+          return new Response('Request body too large', { status: 413 });
+        }
+
         const chunk = payload as { entity?: unknown; chunkIndex?: unknown; items?: unknown };
         if (chunk.entity !== 'messages' && chunk.entity !== 'posts') {
           return new Response('Expected entity to be messages or posts', { status: 400 });
@@ -370,18 +385,21 @@ const worker = {
           return new Response('Expected items array', { status: 400 });
         }
         const chunkIndex = chunk.chunkIndex as number;
+        const payloadStr = JSON.stringify(chunk.items);
+        const payloadHash = await hashText(payloadStr);
 
         await env.LUCIKO_DB
           ?.prepare(
-            `INSERT INTO archive_chunks (entity, chunk_index, payload, item_count, updated_at)
-             VALUES (?, ?, ?, ?, ?)
+            `INSERT INTO archive_chunks (entity, chunk_index, payload, item_count, payload_hash, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(entity, chunk_index) DO UPDATE SET
                payload = excluded.payload,
                item_count = excluded.item_count,
+               payload_hash = excluded.payload_hash,
                updated_at = excluded.updated_at
              WHERE archive_chunks.payload != excluded.payload`,
           )
-          .bind(chunk.entity, chunkIndex, JSON.stringify(chunk.items), chunk.items.length, Date.now())
+          .bind(chunk.entity, chunkIndex, payloadStr, chunk.items.length, payloadHash, Date.now())
           .run();
 
         return json({
@@ -450,17 +468,17 @@ const worker = {
           const placeholders = chunks.map(() => '?').join(', ');
           const rows = await env.LUCIKO_DB
             ?.prepare(
-              `SELECT chunk_index, payload FROM archive_chunks
+              `SELECT chunk_index, payload_hash FROM archive_chunks
                WHERE entity = ? AND chunk_index IN (${placeholders})`,
             )
             .bind(entity, ...chunks.map((chunk) => chunk.chunkIndex))
-            .all<{ chunk_index: number; payload: string }>();
-          const serverRows = new Map(rows?.results.map((row) => [row.chunk_index, row.payload]) ?? []);
+            .all<{ chunk_index: number; payload_hash: string }>();
+          const serverHashes = new Map(rows?.results.map((row) => [row.chunk_index, row.payload_hash]) ?? []);
           const changedChunks: number[] = [];
 
           for (const chunk of chunks) {
-            const serverPayload = serverRows.get(chunk.chunkIndex);
-            if (!serverPayload || (await hashText(serverPayload)) !== chunk.hash) {
+            const serverHash = serverHashes.get(chunk.chunkIndex);
+            if (!serverHash || serverHash !== chunk.hash) {
               changedChunks.push(chunk.chunkIndex);
             }
           }

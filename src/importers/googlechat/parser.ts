@@ -87,25 +87,31 @@ export async function parseGoogleChatZip(file: File, chatId: string, zipInput?: 
         const attachments: Attachment[] = [];
 
         if (record.attached_files) {
-            for (const fileEntry of record.attached_files) {
-                const exportName = fileEntry.export_name?.trim();
-                if (!exportName) continue;
-                const resolved = baseDir ? `${baseDir}/${exportName}` : exportName;
-                const zipEntry = zip.file(resolved);
-                if (!zipEntry) {
-                    logs.push(`Missing attachment file: ${resolved}`);
-                    continue;
-                }
-                const blob = await zipEntry.async('blob');
-                const fileName = normalizeMojibakeText(fileEntry.original_name || exportName) || exportName;
-                attachments.push({
-                    id: uuidv4(),
-                    type: getAttachmentType(fileName),
-                    fileName,
-                    mimeType: blob.type,
-                    size: blob.size,
-                    file: blob
+            const attachmentPromises = record.attached_files
+                .filter((fileEntry) => fileEntry.export_name?.trim())
+                .map(async (fileEntry) => {
+                    const exportName = fileEntry.export_name!.trim();
+                    const resolved = baseDir ? `${baseDir}/${exportName}` : exportName;
+                    const zipEntry = zip.file(resolved);
+                    if (!zipEntry) {
+                        logs.push(`Missing attachment file: ${resolved}`);
+                        return null;
+                    }
+                    const blob = await zipEntry.async('blob');
+                    const fileName = normalizeMojibakeText(fileEntry.original_name || exportName) || exportName;
+                    return {
+                        id: uuidv4(),
+                        type: getAttachmentType(fileName),
+                        fileName,
+                        mimeType: blob.type,
+                        size: blob.size,
+                        file: blob
+                    } as Attachment;
                 });
+
+            const resolved = await Promise.all(attachmentPromises);
+            for (const att of resolved) {
+                if (att) attachments.push(att);
             }
         }
 

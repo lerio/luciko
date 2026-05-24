@@ -150,8 +150,10 @@ export async function parseFacebookPostsZip(file: File, zipInput?: JSZip): Promi
                 });
             });
 
-            for (const uri of mediaUris) {
-                const mediaItem = await toPostMedia(zip, rootPrefix, uri, logs);
+            const mediaResults = await Promise.all(
+                mediaUris.map((uri) => toPostMedia(zip, rootPrefix, uri, logs))
+            );
+            for (const mediaItem of mediaResults) {
                 if (mediaItem) {
                     media.push(mediaItem);
                 }

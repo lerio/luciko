@@ -1,7 +1,9 @@
 import { openDB } from 'idb';
 import type { DBSchema, IDBPDatabase } from 'idb';
 import type { Message } from '../types/chat';
+import { validateMessage } from '../types/chat';
 import type { PostRecord, PostMedia } from '../types/posts';
+import { validatePostRecord } from '../types/posts';
 import { normalizeMojibakeText } from '../utils/text';
 
 interface LucikoDB extends DBSchema {
@@ -42,7 +44,7 @@ interface LucikoDB extends DBSchema {
 const DB_NAME = 'luciko-db';
 const DB_VERSION = 8; // Add hidden items store
 
-let dbPromise: Promise<IDBPDatabase<LucikoDB>>;
+let dbPromise: Promise<IDBPDatabase<LucikoDB>> | undefined;
 
 export function initDB() {
     if (!dbPromise) {
@@ -89,6 +91,10 @@ export function initDB() {
                     db.deleteObjectStore('chats' as never);
                 }
             },
+        }).catch((error) => {
+            // Reset promise so future calls can attempt reconnection
+            dbPromise = undefined;
+            throw error;
         });
     }
     return dbPromise;
@@ -260,6 +266,16 @@ export interface ImportStats {
     updated: number;
 }
 
+async function hashBlob(blob: Blob): Promise<string> {
+    if (!globalThis.crypto?.subtle) {
+        return '';
+    }
+    const buffer = await blob.arrayBuffer();
+    const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * Imports messages, skipping duplicates based on externalId.
  * Returns counts for inserted and updated messages.
@@ -296,52 +312,56 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
         );
     };
 
-    const hashBlob = async (blob: Blob): Promise<string> => {
-        if (!globalThis.crypto?.subtle) {
-            return '';
-        }
-        const buffer = await blob.arrayBuffer();
-        const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', buffer);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-        return hashHex;
-    };
-
-    const buildAttachmentKey = async (att: NonNullable<Message['attachments']>[number]) => {
-        if (att.contentHash) {
-            return `hash:${att.contentHash}`;
-        }
-        if (att.file) {
-            const hash = await hashBlob(att.file);
-            if (hash) {
-                att.contentHash = hash;
-                return `hash:${hash}`;
+    // Pre-compute all attachment hashes and keys before opening any transaction.
+    // crypto.subtle.digest is non-IDB async work that would cause auto-commit.
+    const precomputeAttachmentKeys = async (attachments?: Message['attachments']): Promise<Map<number, string>> => {
+        const keys = new Map<number, string>();
+        if (!attachments || attachments.length === 0) return keys;
+        for (let i = 0; i < attachments.length; i += 1) {
+            const att = attachments[i];
+            if (att.contentHash) {
+                keys.set(i, `hash:${att.contentHash}`);
+            } else if (att.file) {
+                const hash = await hashBlob(att.file);
+                if (hash) {
+                    att.contentHash = hash;
+                    keys.set(i, `hash:${hash}`);
+                } else {
+                    keys.set(i, `meta:${att.mimeType ?? ''}:${att.size ?? ''}`);
+                }
+            } else {
+                keys.set(i, `meta:${att.mimeType ?? ''}:${att.size ?? ''}`);
             }
         }
-        const mime = att.mimeType ?? '';
-        const size = att.size ?? '';
-        return `meta:${mime}:${size}`;
+        return keys;
     };
 
-    const dedupeAttachments = async (attachments?: Message['attachments']) => {
-        if (!attachments || attachments.length === 0) return undefined;
+    const dedupeAttachmentsByKey = (attachments: NonNullable<Message['attachments']>, keys: Map<number, string>): NonNullable<Message['attachments']> => {
         const seen = new Map<string, NonNullable<Message['attachments']>[number]>();
-        for (const att of attachments) {
-            const key = await buildAttachmentKey(att);
+        const result: NonNullable<Message['attachments']> = [];
+        for (let i = 0; i < attachments.length; i += 1) {
+            const key = keys.get(i) ?? '';
             if (!seen.has(key)) {
-                seen.set(key, att);
+                seen.set(key, attachments[i]);
+                result.push(attachments[i]);
             }
         }
-        return Array.from(seen.values());
+        return result;
     };
 
     const normalizedMessages: Message[] = [];
     for (const msg of messages) {
         const normalizedMessage = normalizeMessage(msg);
         if (normalizedMessage.attachments && normalizedMessage.attachments.length > 0) {
-            normalizedMessage.attachments = await dedupeAttachments(normalizedMessage.attachments);
+            // Pre-compute all hashes first, then deduplicate synchronously
+            const keys = await precomputeAttachmentKeys(normalizedMessage.attachments);
+            normalizedMessage.attachments = dedupeAttachmentsByKey(normalizedMessage.attachments, keys);
         }
         normalizedMessages.push(normalizedMessage);
+    }
+
+    for (const msg of normalizedMessages) {
+        validateMessage(msg);
     }
 
     // Use a single transaction for both stores to prevent auto-commit issues
@@ -350,100 +370,118 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
     const attachmentStore = tx.objectStore('attachments');
     const externalIdIndex = messageStore.index('externalId');
 
-    for (const msg of normalizedMessages) {
-        if (msg.externalId) {
-            let existing = await externalIdIndex.get(msg.externalId);
+    // Phase 1: Batch all externalId lookups in parallel
+    const lookupResults = await Promise.all(
+        normalizedMessages.map(async (msg) => {
+            if (!msg.externalId) return { msg, existing: undefined };
+            const existing = await externalIdIndex.get(msg.externalId);
+            return { msg, existing };
+        })
+    );
 
-            if (!existing) {
-                // Save attachments first
-                if (msg.attachments) {
-                    for (const att of msg.attachments) {
-                        if (att.file) {
-                            await attachmentStore.put(att.file, att.id);
-                        }
+    const pendingPuts: Promise<unknown>[] = [];
+
+    const getAttachmentKey = (att: NonNullable<Message['attachments']>[number]): string => {
+        if (att.contentHash) return `hash:${att.contentHash}`;
+        return `meta:${att.mimeType ?? ''}:${att.size ?? ''}`;
+    };
+
+    for (const { msg, existing: existingMsg } of lookupResults) {
+        if (!msg.externalId) {
+            // New message (no externalId)
+            pendingPuts.push(messageStore.put(msg));
+            insertedCount++;
+        } else if (!existingMsg) {
+            // Insert: message not in DB yet
+            if (msg.attachments) {
+                for (const att of msg.attachments) {
+                    if (att.file) {
+                        pendingPuts.push(attachmentStore.put(att.file, att.id));
                     }
                 }
+            }
 
-                // Strip blobs before saving to message store
-                const msgToStore = { ...msg };
-                if (msgToStore.attachments) {
-                    msgToStore.attachments = msgToStore.attachments.map(att => ({
-                        ...att,
-                        file: undefined
-                    }));
+            const msgToStore = { ...msg };
+            if (msgToStore.attachments) {
+                msgToStore.attachments = msgToStore.attachments.map(att => ({
+                    ...att,
+                    file: undefined
+                }));
+            }
+
+            pendingPuts.push(messageStore.put(msgToStore));
+            insertedCount++;
+        } else {
+            // Upgrade: message exists, merge new data
+            let existing = existingMsg;
+            let wasUpdated = false;
+            const normalizedExisting = normalizeMessage(existing);
+            if (
+                normalizedExisting.senderId !== existing.senderId ||
+                normalizedExisting.content !== existing.content ||
+                normalizedExisting.quotedText !== existing.quotedText ||
+                normalizedExisting.quotedSender !== existing.quotedSender ||
+                JSON.stringify(normalizedExisting.attachments ?? []) !== JSON.stringify(existing.attachments ?? [])
+            ) {
+                existing = { ...existing, ...normalizedExisting };
+                wasUpdated = true;
+            }
+            if (msg.attachments && msg.attachments.length > 0) {
+                const updatedAttachments = [...(existing.attachments || [])];
+
+                const existingByKey = new Map<string, NonNullable<Message['attachments']>[number]>();
+                for (const existingAtt of updatedAttachments) {
+                    existingByKey.set(getAttachmentKey(existingAtt), existingAtt);
                 }
 
-                await messageStore.put(msgToStore);
-                insertedCount++;
-            } else {
-                // UPGRADE CASE: Message exists, check if new import has attachments to fill in
-                let wasUpdated = false;
-                const normalizedExisting = normalizeMessage(existing);
-                if (
-                    normalizedExisting.senderId !== existing.senderId ||
-                    normalizedExisting.content !== existing.content ||
-                    normalizedExisting.quotedText !== existing.quotedText ||
-                    normalizedExisting.quotedSender !== existing.quotedSender ||
-                    JSON.stringify(normalizedExisting.attachments ?? []) !== JSON.stringify(existing.attachments ?? [])
-                ) {
-                    existing = { ...existing, ...normalizedExisting };
-                    wasUpdated = true;
-                }
-                if (msg.attachments && msg.attachments.length > 0) {
-                    const updatedAttachments = [...(existing.attachments || [])];
+                for (const newAtt of msg.attachments) {
+                    if (newAtt.file) {
+                        const key = getAttachmentKey(newAtt);
+                        const existingAtt = existingByKey.get(key);
 
-                    const existingByKey = new Map<string, NonNullable<Message['attachments']>[number]>();
-                    for (const existingAtt of updatedAttachments) {
-                        const key = await buildAttachmentKey(existingAtt);
-                        existingByKey.set(key, existingAtt);
-                    }
-
-                    for (const newAtt of msg.attachments) {
-                        if (newAtt.file) {
-                            const key = await buildAttachmentKey(newAtt);
-                            const existingAtt = existingByKey.get(key);
-
-                            if (!existingAtt) {
-                                // New attachment metadata entirely
-                                await attachmentStore.put(newAtt.file, newAtt.id);
-                                updatedAttachments.push({ ...newAtt, file: undefined });
+                        if (!existingAtt) {
+                            pendingPuts.push(attachmentStore.put(newAtt.file, newAtt.id));
+                            updatedAttachments.push({ ...newAtt, file: undefined });
+                            wasUpdated = true;
+                            existingByKey.set(key, newAtt);
+                        } else {
+                            const storedBlob = await attachmentStore.get(existingAtt.id);
+                            if (!storedBlob) {
+                                pendingPuts.push(attachmentStore.put(newAtt.file, existingAtt.id));
                                 wasUpdated = true;
-                                existingByKey.set(key, newAtt);
-                            } else {
-                                // Preserve the existing attachment id and only restore the blob if it is missing.
-                                const storedBlob = await attachmentStore.get(existingAtt.id);
-                                if (!storedBlob) {
-                                    await attachmentStore.put(newAtt.file, existingAtt.id);
-                                    wasUpdated = true;
-                                }
                             }
                         }
                     }
-
-                    if (wasUpdated) {
-                        existing.attachments = await dedupeAttachments(updatedAttachments);
-                        existing.senderId = msg.senderId;
-                        existing.content = msg.content;
-                        existing.quotedText = msg.quotedText;
-                        existing.quotedSender = msg.quotedSender;
-                    }
-                }
-                if (msg.reactions && msg.reactions.length > 0 && !reactionsEqual(existing.reactions, msg.reactions)) {
-                    existing.reactions = msg.reactions;
-                    wasUpdated = true;
                 }
 
                 if (wasUpdated) {
-                    await messageStore.put(existing);
-                    updatedCount++;
+                    const seenKeys = new Set<string>();
+                    existing.attachments = updatedAttachments.filter((att) => {
+                        const key = getAttachmentKey(att);
+                        if (seenKeys.has(key)) return false;
+                        seenKeys.add(key);
+                        return true;
+                    });
+                    existing.senderId = msg.senderId;
+                    existing.content = msg.content;
+                    existing.quotedText = msg.quotedText;
+                    existing.quotedSender = msg.quotedSender;
                 }
             }
-        } else {
-            await messageStore.put(msg);
-            insertedCount++;
+            if (msg.reactions && msg.reactions.length > 0 && !reactionsEqual(existing.reactions, msg.reactions)) {
+                existing.reactions = msg.reactions;
+                wasUpdated = true;
+            }
+
+            if (wasUpdated) {
+                pendingPuts.push(messageStore.put(existing));
+                updatedCount++;
+            }
         }
     }
 
+    // Await all accumulated writes, then the transaction
+    await Promise.all(pendingPuts);
     await tx.done;
     return { inserted: insertedCount, updated: updatedCount };
 }
@@ -457,42 +495,40 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
     let insertedCount = 0;
     let updatedCount = 0;
 
-    const hashBlob = async (blob: Blob): Promise<string> => {
-        if (!globalThis.crypto?.subtle) {
-            return '';
-        }
-        const buffer = await blob.arrayBuffer();
-        const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', buffer);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-    };
-
-    const buildMediaKey = async (media: PostMedia) => {
-        if (media.contentHash) {
-            return `hash:${media.contentHash}`;
-        }
-        if (media.file) {
-            const hash = await hashBlob(media.file);
-            if (hash) {
-                media.contentHash = hash;
-                return `hash:${hash}`;
+    // Pre-compute all media hashes and keys before opening any transaction.
+    // crypto.subtle.digest is non-IDB async work that would cause auto-commit.
+    const precomputeMediaKeys = async (media?: PostMedia[]): Promise<Map<number, string>> => {
+        const keys = new Map<number, string>();
+        if (!media || media.length === 0) return keys;
+        for (let i = 0; i < media.length; i += 1) {
+            const item = media[i];
+            if (item.contentHash) {
+                keys.set(i, `hash:${item.contentHash}`);
+            } else if (item.file) {
+                const hash = await hashBlob(item.file);
+                if (hash) {
+                    item.contentHash = hash;
+                    keys.set(i, `hash:${hash}`);
+                } else if (item.sourceUri) {
+                    keys.set(i, `uri:${item.sourceUri}`);
+                } else {
+                    keys.set(i, `meta:${item.fileName}:${item.mimeType ?? ''}:${item.size ?? ''}`);
+                }
+            } else if (item.sourceUri) {
+                keys.set(i, `uri:${item.sourceUri}`);
+            } else {
+                keys.set(i, `meta:${item.fileName}:${item.mimeType ?? ''}:${item.size ?? ''}`);
             }
         }
-        if (media.sourceUri) {
-            return `uri:${media.sourceUri}`;
-        }
-        const mime = media.mimeType ?? '';
-        const size = media.size ?? '';
-        return `meta:${media.fileName}:${mime}:${size}`;
+        return keys;
     };
 
-    const dedupeMedia = async (media?: PostMedia[]) => {
-        if (!media || media.length === 0) return undefined;
+    const dedupeMediaByKey = (media: PostMedia[], keys: Map<number, string>): PostMedia[] => {
         const seen = new Map<string, PostMedia>();
-        for (const item of media) {
-            const key = await buildMediaKey(item);
+        for (let i = 0; i < media.length; i += 1) {
+            const key = keys.get(i) ?? '';
             if (!seen.has(key)) {
-                const next = { ...item, id: key };
+                const next = { ...media[i], id: key };
                 seen.set(key, next);
             }
         }
@@ -502,9 +538,14 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
     const normalizedPosts: PostRecord[] = [];
     for (const post of posts) {
         if (post.media && post.media.length > 0) {
-            post.media = await dedupeMedia(post.media);
+            const keys = await precomputeMediaKeys(post.media);
+            post.media = dedupeMediaByKey(post.media, keys);
         }
         normalizedPosts.push(post);
+    }
+
+    for (const post of normalizedPosts) {
+        validatePostRecord(post);
     }
 
     const tx = db.transaction(['posts', 'attachments'], 'readwrite');
@@ -512,17 +553,28 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
     const attachmentStore = tx.objectStore('attachments');
     const externalIdIndex = postStore.index('externalId');
 
-    for (const post of normalizedPosts) {
-        let existing: PostRecord | undefined;
-        if (post.externalId) {
-            existing = await externalIdIndex.get(post.externalId);
-        }
+    // Phase 1: Batch all externalId lookups in parallel
+    const lookupResults = await Promise.all(
+        normalizedPosts.map(async (post) => {
+            if (!post.externalId) return { post, existing: undefined };
+            const existing = await externalIdIndex.get(post.externalId);
+            return { post, existing };
+        })
+    );
 
-        if (!existing) {
+    const pendingPuts: Promise<unknown>[] = [];
+
+    for (const { post, existing: existingPost } of lookupResults) {
+        if (!post.externalId) {
+            // New post without externalId
+            pendingPuts.push(postStore.put(post));
+            insertedCount++;
+        } else if (!existingPost) {
+            // Insert
             if (post.media) {
                 for (const media of post.media) {
                     if (media.file) {
-                        await attachmentStore.put(media.file, media.id);
+                        pendingPuts.push(attachmentStore.put(media.file, media.id));
                     }
                 }
             }
@@ -531,9 +583,11 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
             if (postToStore.media) {
                 postToStore.media = postToStore.media.map((media) => ({ ...media, file: undefined }));
             }
-            await postStore.put(postToStore);
+            pendingPuts.push(postStore.put(postToStore));
             insertedCount++;
         } else {
+            // Upgrade
+            let existing = existingPost;
             let wasUpdated = false;
             if (post.media && post.media.length > 0) {
                 const updatedMedia = [...(existing.media || [])];
@@ -543,14 +597,14 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
                     const current = existingById.get(media.id);
                     if (!current) {
                         if (media.file) {
-                            await attachmentStore.put(media.file, media.id);
+                            pendingPuts.push(attachmentStore.put(media.file, media.id));
                         }
                         updatedMedia.push({ ...media, file: undefined });
                         wasUpdated = true;
                     } else if (media.file) {
                         const storedBlob = await attachmentStore.get(current.id);
                         if (!storedBlob) {
-                            await attachmentStore.put(media.file, current.id);
+                            pendingPuts.push(attachmentStore.put(media.file, current.id));
                             wasUpdated = true;
                         }
                     }
@@ -575,12 +629,13 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
             }
 
             if (wasUpdated) {
-                await postStore.put(existing);
+                pendingPuts.push(postStore.put(existing));
                 updatedCount++;
             }
         }
     }
 
+    await Promise.all(pendingPuts);
     await tx.done;
     return { inserted: insertedCount, updated: updatedCount };
 }

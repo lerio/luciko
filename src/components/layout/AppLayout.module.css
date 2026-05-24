@@ -28,7 +28,7 @@
 .header {
   height: 60px;
   flex-shrink: 0;
-  background-color: #008069;
+  background-color: var(--color-primary);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -72,6 +72,27 @@
   color: #f8fafc;
 }
 
+.syncStatus {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+.syncStatusSuccess {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+
+.syncStatusError {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
+}
+
 .nav {
   display: flex;
   gap: 15px;
@@ -100,7 +121,7 @@
 
 .ctaButton {
   padding: 10px 20px;
-  background-color: #008069;
+  background-color: var(--color-primary);
   color: white;
   border: none;
   border-radius: 4px;
