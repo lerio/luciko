@@ -443,6 +443,8 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
             // Upgrade: message exists, merge new data
             let existing = existingMsg;
             let wasUpdated = false;
+
+            // Apply mojibake normalization to the existing record if needed
             const normalizedExisting = normalizeMessage(existing);
             if (
                 normalizedExisting.senderId !== existing.senderId ||
@@ -454,6 +456,21 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
                 existing = { ...existing, ...normalizedExisting };
                 wasUpdated = true;
             }
+
+            // Merge incoming field changes (content, sender, quoted) regardless of attachments
+            if (
+                msg.senderId !== existing.senderId ||
+                msg.content !== existing.content ||
+                msg.quotedText !== existing.quotedText ||
+                msg.quotedSender !== existing.quotedSender
+            ) {
+                existing.senderId = msg.senderId;
+                existing.content = msg.content;
+                existing.quotedText = msg.quotedText;
+                existing.quotedSender = msg.quotedSender;
+                wasUpdated = true;
+            }
+
             if (msg.attachments && msg.attachments.length > 0) {
                 const updatedAttachments = [...(existing.attachments || [])];
 
@@ -490,12 +507,9 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
                         seenKeys.add(key);
                         return true;
                     });
-                    existing.senderId = msg.senderId;
-                    existing.content = msg.content;
-                    existing.quotedText = msg.quotedText;
-                    existing.quotedSender = msg.quotedSender;
                 }
             }
+
             if (msg.reactions && msg.reactions.length > 0 && !reactionsEqual(existing.reactions, msg.reactions)) {
                 existing.reactions = msg.reactions;
                 wasUpdated = true;
