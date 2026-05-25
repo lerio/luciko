@@ -8,7 +8,7 @@ import { Upload, MessageSquare, Newspaper, Search, LogOut } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 import { SearchPage } from '../search/SearchPage';
-import { hydrateLocalArchiveFromServer } from '../../store/archiveSync';
+import { hydrateLocalArchiveFromServer, pullBookmarksFromServer } from '../../store/archiveSync';
 import { logout } from '../../store/auth';
 
 const PAGE_SIZE = 100;
@@ -103,6 +103,7 @@ export function AppLayout() {
     const [postFocusRequest, setPostFocusRequest] = useState<{ postId: string; token: number } | null>(null);
     const [cloudStatus, setCloudStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
     const [syncStatus, setSyncStatus] = useState<'syncing' | 'synced' | 'error' | null>(null);
+    const [bookmarkVersion, setBookmarkVersion] = useState(0);
 
     const fetchMessages = useCallback(
         (chatId: string, startOffset: number) => getMessagesPaginated(chatId, PAGE_SIZE, startOffset),
@@ -118,6 +119,8 @@ export function AppLayout() {
             setSyncStatus('syncing');
             console.info('Archive sync: pulling from server');
             const imported = await hydrateLocalArchiveFromServer();
+            await pullBookmarksFromServer();
+            setBookmarkVersion((v) => v + 1);
             if (!imported) {
                 console.info('Archive sync: nothing available on the server yet.');
                 setSyncStatus('synced');
@@ -373,6 +376,7 @@ export function AppLayout() {
                         onJumpToBookmark={jumpToMessage}
                         focusRequest={messageFocusRequest}
                         onFocusRequestHandled={handleMessageFocusHandled}
+                        bookmarkVersion={bookmarkVersion}
                     />
                 ) : currentView === 'import' ? (
                     <ImportPage />
@@ -385,6 +389,7 @@ export function AppLayout() {
                     <PostsPage
                         focusRequest={postFocusRequest}
                         onFocusRequestHandled={handlePostFocusHandled}
+                        bookmarkVersion={bookmarkVersion}
                     />
                 )}
             </div>

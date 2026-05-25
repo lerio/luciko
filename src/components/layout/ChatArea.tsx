@@ -3,6 +3,7 @@ import type { Chat, Message } from "../../types/chat";
 import { MessageList } from "../chat/MessageList";
 import { Bookmark, EyeOff, Eye } from "lucide-react";
 import { getBookmark, setBookmark, getHiddenItems, setHiddenItem } from "../../store/db";
+import { pushBookmarksToServer } from "../../store/archiveSync";
 import styles from "./ChatArea.module.css";
 import { format } from "date-fns";
 import messageListStyles from "../chat/MessageList.module.css";
@@ -18,11 +19,12 @@ interface ChatAreaProps {
   onJumpToBookmark?: (messageId: string) => Promise<boolean>;
   focusRequest?: { messageId: string; token: number } | null;
   onFocusRequestHandled?: () => void;
+  bookmarkVersion?: number;
 }
 
 const CURRENT_USER_ID = "Valerio Donati";
 
-export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOlder, hasNewer, onJumpToLatest, onJumpToBookmark, focusRequest, onFocusRequestHandled }: ChatAreaProps) {
+export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOlder, hasNewer, onJumpToLatest, onJumpToBookmark, focusRequest, onFocusRequestHandled, bookmarkVersion }: ChatAreaProps) {
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -142,7 +144,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     return () => {
       isActive = false;
     };
-  }, [activeChat?.id]);
+  }, [activeChat?.id, bookmarkVersion]);
 
   useEffect(() => {
     if (!activeChat?.id) return;
@@ -151,6 +153,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     const persist = async () => {
       try {
         await setBookmark(activeChat.id, bookmarkedMessageId);
+        await pushBookmarksToServer();
       } catch (error) {
         console.warn("Failed to persist bookmark to storage:", error);
       }

@@ -111,6 +111,27 @@ export async function getBookmark(chatId: string): Promise<string | null> {
     return record?.messageId ?? null;
 }
 
+export async function getAllBookmarks(): Promise<Array<{ chatId: string; messageId: string }>> {
+    const db = await initDB();
+    const tx = db.transaction('bookmarks', 'readonly');
+    const bookmarks: Array<{ chatId: string; messageId: string }> = [];
+    let cursor = await tx.store.openCursor();
+    while (cursor) {
+        bookmarks.push(cursor.value);
+        cursor = await cursor.continue();
+    }
+    return bookmarks;
+}
+
+export async function importBookmarks(bookmarks: Array<{ chatId: string; messageId: string }>): Promise<void> {
+    const db = await initDB();
+    const tx = db.transaction('bookmarks', 'readwrite');
+    for (const bookmark of bookmarks) {
+        await tx.store.put(bookmark);
+    }
+    await tx.done;
+}
+
 export async function setBookmark(chatId: string, messageId: string | null): Promise<void> {
     const db = await initDB();
     if (messageId) {
@@ -587,7 +608,7 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
             insertedCount++;
         } else {
             // Upgrade
-            let existing = existingPost;
+            const existing = existingPost;
             let wasUpdated = false;
             if (post.media && post.media.length > 0) {
                 const updatedMedia = [...(existing.media || [])];

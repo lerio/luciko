@@ -350,6 +350,25 @@ const worker = {
         const offset = Math.max(0, Number(url.searchParams.get('offset') ?? '0') || 0);
         const limit = Math.max(1, Math.min(ARCHIVE_CHUNK_SIZE, Number(url.searchParams.get('limit') ?? String(PAGE_SIZE)) || PAGE_SIZE));
 
+        if (entity === 'bookmarks') {
+          const rows = await env.LUCIKO_DB
+            ?.prepare('SELECT payload FROM archive_chunks WHERE entity = ? AND chunk_index = 0')
+            .bind(entity)
+            .all<{ payload: string }>();
+          const items: unknown[] = rows?.results.length ? JSON.parse(rows.results[0].payload) as unknown[] : [];
+
+          return json({
+            ok: true,
+            route: '/api/sync',
+            schemaReady,
+            entity,
+            offset: 0,
+            limit: items.length,
+            total: items.length,
+            items,
+          });
+        }
+
         if (entity === 'messages' || entity === 'posts') {
           const table = entity === 'messages' ? 'archive_messages' : 'archive_posts';
           const totalRows = await env.LUCIKO_DB
@@ -424,7 +443,7 @@ const worker = {
           ok: true,
           route: '/api/sync',
           schemaReady,
-          entities: ['messages', 'posts'],
+          entities: ['messages', 'posts', 'bookmarks'],
         });
       }
 
@@ -499,8 +518,8 @@ const worker = {
         }
 
         const chunk = payload as { entity?: unknown; chunkIndex?: unknown; items?: unknown };
-        if (chunk.entity !== 'messages' && chunk.entity !== 'posts') {
-          return new Response('Expected entity to be messages or posts', { status: 400 });
+        if (chunk.entity !== 'messages' && chunk.entity !== 'posts' && chunk.entity !== 'bookmarks') {
+          return new Response('Expected entity to be messages, posts, or bookmarks', { status: 400 });
         }
         if (typeof chunk.chunkIndex !== 'number' || !Number.isInteger(chunk.chunkIndex) || chunk.chunkIndex < 0) {
           return new Response('Expected non-negative chunkIndex', { status: 400 });
@@ -559,8 +578,8 @@ const worker = {
         }
 
         const entity = payload.entity;
-        if (entity !== 'messages' && entity !== 'posts') {
-          return new Response('Expected entity to be messages or posts', { status: 400 });
+        if (entity !== 'messages' && entity !== 'posts' && entity !== 'bookmarks') {
+          return new Response('Expected entity to be messages, posts, or bookmarks', { status: 400 });
         }
 
         if (Array.isArray(payload.chunks)) {

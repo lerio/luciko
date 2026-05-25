@@ -10,7 +10,7 @@ import { parseOldGoogleChatCsv } from '../../importers/googlechat/oldCsv';
 import { parseIMessageJson } from '../../importers/imessage/parser';
 import { parseGmailZip } from '../../importers/gmail/parser';
 import { getMessagesCount, getPostsCount, importMessages, importPosts } from '../../store/db';
-import { pushLocalArchiveToServer } from '../../store/archiveSync';
+import { pushLocalArchiveToServer, pushBookmarksToServer } from '../../store/archiveSync';
 import type { PushProgress } from '../../store/archiveSync';
 import { TARGET_CHAT_ID } from '../../constants/chat';
 import styles from './ImportPage.module.css';
@@ -165,6 +165,7 @@ export function ImportPage() {
             }
 
             await pushLocalArchiveToServer(setSyncProgress);
+            await pushBookmarksToServer();
             setManualSyncStatus('success');
             setManualSyncMessage(`Cloud sync complete: ${messageCount.toLocaleString()} messages and ${postCount.toLocaleString()} posts uploaded.`);
         } catch (error) {
@@ -237,6 +238,7 @@ export function ImportPage() {
             setImportStatus('syncing');
 
             await pushLocalArchiveToServer(setSyncProgress);
+            await pushBookmarksToServer();
             setImportStatus('success');
 
         } catch (error: unknown) {

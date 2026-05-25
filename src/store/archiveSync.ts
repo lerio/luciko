@@ -1,4 +1,4 @@
-import { getMessagesCount, getMessagesPaginated, getPostsCount, getPostsPaginated, importMessages, importPosts } from './db';
+import { getMessagesCount, getMessagesPaginated, getPostsCount, getPostsPaginated, importMessages, importPosts, getAllBookmarks, importBookmarks } from './db';
 import { TARGET_CHAT_ID } from '../constants/chat';
 import type { Message } from '../types/chat';
 import type { PostRecord } from '../types/posts';
@@ -18,12 +18,14 @@ type SerializedPost = Omit<PostRecord, 'media'> & {
 interface SyncResponse {
     ok: boolean;
     schemaReady?: boolean;
-    entity?: 'messages' | 'posts';
+    entity?: 'messages' | 'posts' | 'bookmarks';
     offset?: number;
     limit?: number;
     total?: number;
     items?: unknown[];
 }
+
+type SyncEntity = 'messages' | 'posts' | 'bookmarks';
 
 interface SyncDiffResponse extends SyncResponse {
     chunks?: number[];
@@ -33,7 +35,7 @@ const SYNC_ENDPOINT = '/api/sync';
 const PAGE_SIZE = 500;
 
 export type PushProgress = {
-    entity: 'messages' | 'posts';
+    entity: 'messages' | 'posts' | 'bookmarks';
     uploaded: number;
     total: number;
     resumedFrom: number;
@@ -81,7 +83,7 @@ async function hashText(value: string): Promise<string> {
     return Array.from(new Uint8Array(hashBuffer), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function postChunk(entity: 'messages' | 'posts', chunkIndex: number, items: Array<SerializedMessage | SerializedPost>): Promise<void> {
+async function postChunk(entity: SyncEntity, chunkIndex: number, items: unknown[]): Promise<void> {
     const response = await fetch(`${SYNC_ENDPOINT}/chunk`, {
         method: 'POST',
         headers: {
@@ -100,7 +102,7 @@ async function postChunk(entity: 'messages' | 'posts', chunkIndex: number, items
     }
 }
 
-async function getServerEntityTotal(entity: 'messages' | 'posts'): Promise<number> {
+async function getServerEntityTotal(entity: SyncEntity): Promise<number> {
     const response = await fetch(`${SYNC_ENDPOINT}?entity=${entity}&limit=1&offset=0`, {
         method: 'GET',
         cache: 'no-store',
@@ -116,7 +118,7 @@ async function getServerEntityTotal(entity: 'messages' | 'posts'): Promise<numbe
 }
 
 async function getChangedChunks(
-    entity: 'messages' | 'posts',
+    entity: SyncEntity,
     chunks: Array<{ chunkIndex: number; payload: string }>
 ): Promise<Set<number>> {
     if (chunks.length === 0) {
@@ -144,6 +146,39 @@ async function getChangedChunks(
 
     const payload = (await response.json()) as SyncDiffResponse;
     return new Set(payload.chunks ?? []);
+}
+
+type BookmarkRecord = { chatId: string; messageId: string };
+
+export async function pushBookmarksToServer(): Promise<void> {
+    const bookmarks = await getAllBookmarks();
+    const payload = JSON.stringify(bookmarks);
+    const changed = await getChangedChunks('bookmarks', [{ chunkIndex: 0, payload }]);
+
+    if (changed.has(0)) {
+        await postChunk('bookmarks', 0, bookmarks);
+    }
+}
+
+export async function pullBookmarksFromServer(): Promise<boolean> {
+    const response = await fetch(`${SYNC_ENDPOINT}?entity=bookmarks&limit=1000&offset=0`, {
+        method: 'GET',
+        cache: 'no-store',
+    });
+
+    if (!response.ok) {
+        const details = await response.text().catch(() => '');
+        throw new Error(`Failed to fetch bookmarks from server (${response.status})${details ? `: ${details}` : ''}`);
+    }
+
+    const payload = (await response.json()) as SyncResponse;
+    const items = (payload.items ?? []) as BookmarkRecord[];
+
+    if (items.length > 0) {
+        await importBookmarks(items);
+        return true;
+    }
+    return false;
 }
 
 export async function pushLocalArchiveToServer(onProgress?: (progress: PushProgress) => void): Promise<void> {
@@ -252,7 +287,7 @@ function clearSyncCheckpoint(entity: string): void {
 
 export async function hydrateLocalArchiveFromServer(): Promise<boolean> {
     const loadEntity = async <T>(
-        entity: 'messages' | 'posts',
+        entity: SyncEntity,
         deserialize: (item: unknown) => T,
         importer: (items: T[]) => Promise<void>
     ) => {
