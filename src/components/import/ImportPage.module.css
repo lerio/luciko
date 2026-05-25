@@ -128,6 +128,12 @@
   white-space: nowrap;
 }
 
+.syncButtons {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
 .syncButton:disabled {
   cursor: not-allowed;
   opacity: 0.55;

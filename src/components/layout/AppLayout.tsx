@@ -117,20 +117,29 @@ export function AppLayout() {
 
         try {
             setSyncStatus('syncing');
-            console.info('Archive sync: pulling from server');
-            const imported = await hydrateLocalArchiveFromServer();
-            await pullBookmarksFromServer();
-            setBookmarkVersion((v) => v + 1);
-            if (!imported) {
-                console.info('Archive sync: nothing available on the server yet.');
-                setSyncStatus('synced');
-                return;
+
+            // Only hydrate from server if local DB is empty (first visit on this device).
+            // Otherwise we already have data and full re-hydration is unnecessary.
+            const localCount = await getMessagesCount(activeChat.id);
+            if (localCount === 0) {
+                console.info('Archive sync: pulling from server');
+                const imported = await hydrateLocalArchiveFromServer();
+                await pullBookmarksFromServer();
+                setBookmarkVersion((v) => v + 1);
+                if (!imported) {
+                    console.info('Archive sync: nothing available on the server yet.');
+                    setSyncStatus('synced');
+                    return;
+                }
+            } else {
+                await pullBookmarksFromServer();
+                setBookmarkVersion((v) => v + 1);
             }
 
             const refreshedTotal = await getMessagesCount(activeChat.id);
             const msgs = await fetchMessages(activeChat.id, 0);
             dispatch({ type: 'RESET', msgs, total: refreshedTotal });
-            console.info(`Archive sync: hydrated ${refreshedTotal} messages from the server.`);
+            console.info(`Archive sync: loaded ${refreshedTotal} messages.`);
             setSyncStatus('synced');
         } catch (error) {
             console.error('Failed to sync archive:', error);

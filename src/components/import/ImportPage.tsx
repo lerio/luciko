@@ -10,7 +10,7 @@ import { parseOldGoogleChatCsv } from '../../importers/googlechat/oldCsv';
 import { parseIMessageJson } from '../../importers/imessage/parser';
 import { parseGmailZip } from '../../importers/gmail/parser';
 import { getMessagesCount, getPostsCount, importMessages, importPosts } from '../../store/db';
-import { pushLocalArchiveToServer, pushBookmarksToServer } from '../../store/archiveSync';
+import { pushLocalArchiveToServer, pushBookmarksToServer, hydrateLocalArchiveFromServer, pullBookmarksFromServer } from '../../store/archiveSync';
 import type { PushProgress } from '../../store/archiveSync';
 import { TARGET_CHAT_ID } from '../../constants/chat';
 import styles from './ImportPage.module.css';
@@ -117,6 +117,8 @@ export function ImportPage() {
     const [syncProgress, setSyncProgress] = useState<PushProgress | null>(null);
     const [manualSyncStatus, setManualSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
     const [manualSyncMessage, setManualSyncMessage] = useState<string>('');
+    const [pullStatus, setPullStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
+    const [pullMessage, setPullMessage] = useState<string>('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const setDragging = (value: boolean) => (e: React.DragEvent) => {
@@ -172,6 +174,27 @@ export function ImportPage() {
             const message = error instanceof Error ? error.message : 'Unknown sync error';
             setManualSyncStatus('error');
             setManualSyncMessage(message);
+        }
+    };
+
+    const pullFromServer = async () => {
+        setPullStatus('syncing');
+        setPullMessage('');
+
+        try {
+            const imported = await hydrateLocalArchiveFromServer();
+            await pullBookmarksFromServer();
+            setPullStatus('success');
+            if (imported) {
+                const count = await getMessagesCount(TARGET_CHAT_ID);
+                setPullMessage(`Pulled ${count.toLocaleString()} messages from server.`);
+            } else {
+                setPullMessage('No data available on the server.');
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            setPullStatus('error');
+            setPullMessage(message);
         }
     };
 
@@ -330,7 +353,7 @@ export function ImportPage() {
                 <div>
                     <h3 className={styles.syncTitle}>Cloud sync</h3>
                     <p className={styles.syncText}>
-                        Use this if the archive is visible on this device but missing on another one.
+                        Push local data to the server or pull data from the server onto this device.
                     </p>
                     {syncProgress && manualSyncStatus === 'syncing' && (
                         <p className={styles.syncProgress}>{formatSyncProgress(syncProgress)}</p>
@@ -340,15 +363,30 @@ export function ImportPage() {
                             {manualSyncMessage}
                         </p>
                     )}
+                    {pullMessage && (
+                        <p className={pullStatus === 'error' ? styles.syncError : styles.syncSuccess}>
+                            {pullMessage}
+                        </p>
+                    )}
                 </div>
-                <button
-                    type="button"
-                    className={styles.syncButton}
-                    disabled={manualSyncStatus === 'syncing' || importStatus === 'processing' || importStatus === 'syncing'}
-                    onClick={syncLocalArchive}
-                >
-                    {manualSyncStatus === 'syncing' ? 'Syncing...' : 'Sync local archive'}
-                </button>
+                <div className={styles.syncButtons}>
+                    <button
+                        type="button"
+                        className={styles.syncButton}
+                        disabled={manualSyncStatus === 'syncing' || importStatus === 'processing' || importStatus === 'syncing'}
+                        onClick={syncLocalArchive}
+                    >
+                        {manualSyncStatus === 'syncing' ? 'Pushing...' : 'Push to server'}
+                    </button>
+                    <button
+                        type="button"
+                        className={styles.syncButton}
+                        disabled={pullStatus === 'syncing' || importStatus === 'processing' || importStatus === 'syncing'}
+                        onClick={pullFromServer}
+                    >
+                        {pullStatus === 'syncing' ? 'Pulling...' : 'Pull from server'}
+                    </button>
+                </div>
             </div>
 
             {logs.length > 0 && (
