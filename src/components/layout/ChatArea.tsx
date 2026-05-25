@@ -29,6 +29,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const bookmarkLoadTokenRef = useRef(0);
+  const initialAutoScrollRef = useRef(true);
   const hiddenMarkerRef = useRef<HTMLElement | null>(null);
   const [bookmarkedMessageId, setBookmarkedMessageId] = useState<string | null>(null);
   const [isBookmarkReady, setIsBookmarkReady] = useState(false);
@@ -120,7 +121,38 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     return () => {
       isActive = false;
     };
+  }, [activeChat?.id, bookmarkVersion]);
+
+  // Reset auto-scroll flag when the active chat changes.
+  useEffect(() => {
+    initialAutoScrollRef.current = true;
   }, [activeChat?.id]);
+
+  // Auto-scroll to bookmarked message on initial load.
+  useEffect(() => {
+    if (!initialAutoScrollRef.current) return;
+    if (!isBookmarkReady || !bookmarkedMessageId) return;
+    if (messages.length === 0) return;
+
+    initialAutoScrollRef.current = false;
+
+    const target = document.getElementById(`message-${bookmarkedMessageId}`);
+    if (target) {
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      return;
+    }
+
+    if (onJumpToBookmark) {
+      requestAnimationFrame(() => setIsBookmarkScrollPending(true));
+      onJumpToBookmark(bookmarkedMessageId).then((didJump) => {
+        if (!didJump) {
+          setIsBookmarkScrollPending(false);
+        }
+      });
+    }
+  }, [isBookmarkReady, bookmarkedMessageId, messages.length, onJumpToBookmark]);
 
   useEffect(() => {
     let isActive = true;
