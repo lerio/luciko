@@ -126,6 +126,13 @@ export async function getAllBookmarks(): Promise<Array<{ chatId: string; message
 export async function importBookmarks(bookmarks: Array<{ chatId: string; messageId: string }>): Promise<void> {
     const db = await initDB();
     const tx = db.transaction('bookmarks', 'readwrite');
+    // Clear all existing bookmarks, then insert the server's set.
+    // This handles deletions that happened on other devices.
+    let cursor = await tx.store.openCursor();
+    while (cursor) {
+        await tx.store.delete(cursor.key);
+        cursor = await cursor.continue();
+    }
     for (const bookmark of bookmarks) {
         await tx.store.put(bookmark);
     }

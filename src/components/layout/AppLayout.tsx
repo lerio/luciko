@@ -150,6 +150,8 @@ export function AppLayout() {
                 const total = await getMessagesCount(activeChat.id);
                 if (total === 0) {
                     await hydrateLocalArchiveFromServer();
+                    await pullBookmarksFromServer();
+                    setBookmarkVersion((v) => v + 1);
                 }
 
                 if (!isActive) {
@@ -182,6 +184,36 @@ export function AppLayout() {
             window.clearTimeout(timeoutId);
         };
     }, [chatRefreshToken, syncArchive]);
+
+    // Pull bookmarks from server on mount and on visibility change,
+    // independent of the current view.
+    useEffect(() => {
+        let isActive = true;
+        const pullBookmarks = async () => {
+            try {
+                await pullBookmarksFromServer();
+                if (isActive) {
+                    setBookmarkVersion((v) => v + 1);
+                }
+            } catch (error) {
+                console.warn('Failed to pull bookmarks from server:', error);
+            }
+        };
+
+        void pullBookmarks();
+
+        const handleVisibility = () => {
+            if (document.visibilityState === 'visible') {
+                void pullBookmarks();
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibility);
+
+        return () => {
+            isActive = false;
+            document.removeEventListener('visibilitychange', handleVisibility);
+        };
+    }, []);
 
     const loadLatestMessages = async () => {
         if (isFetching) return;
