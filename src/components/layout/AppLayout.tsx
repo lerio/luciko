@@ -4,11 +4,10 @@ import { ChatArea } from './ChatArea';
 import { ImportPage } from '../import/ImportPage';
 import { PostsPage } from '../posts/PostsPage';
 import { getMessageOffsetInChat, getMessagesPaginated, getMessagesCount } from '../../store/db';
-import { Upload, MessageSquare, Newspaper, Search, LogOut } from 'lucide-react';
+import { Upload, MessageSquare, Search, LogOut, Cloud, CloudOff } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 import { SearchPage } from '../search/SearchPage';
-import { hydrateLocalArchiveFromServer, pullBookmarksFromServer } from '../../store/archiveSync';
 import { logout } from '../../store/auth';
 
 const PAGE_SIZE = 100;
@@ -98,54 +97,14 @@ export function AppLayout() {
     const [pagination, dispatch] = useReducer(paginationReducer, initialPagination);
     const { messages, offset, hasOlder, hasNewer, isFetching } = pagination;
     const [currentView, setCurrentView] = useState<'chat' | 'import' | 'posts' | 'search'>('chat');
-    const [chatRefreshToken, setChatRefreshToken] = useState(0);
     const [messageFocusRequest, setMessageFocusRequest] = useState<{ messageId: string; token: number } | null>(null);
     const [postFocusRequest, setPostFocusRequest] = useState<{ postId: string; token: number } | null>(null);
     const [cloudStatus, setCloudStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
-    const [syncStatus, setSyncStatus] = useState<'syncing' | 'synced' | 'error' | null>(null);
-    const [bookmarkVersion, setBookmarkVersion] = useState(0);
 
     const fetchMessages = useCallback(
         (chatId: string, startOffset: number) => getMessagesPaginated(chatId, PAGE_SIZE, startOffset),
         []
     );
-
-    const syncArchive = useCallback(async (force = false) => {
-        if (!force && currentView !== 'chat') {
-            return;
-        }
-
-        try {
-            setSyncStatus('syncing');
-
-            // Only hydrate from server if local DB is empty (first visit on this device).
-            // Otherwise we already have data and full re-hydration is unnecessary.
-            const localCount = await getMessagesCount(activeChat.id);
-            if (localCount === 0) {
-                console.info('Archive sync: pulling from server');
-                const imported = await hydrateLocalArchiveFromServer();
-                await pullBookmarksFromServer();
-                setBookmarkVersion((v) => v + 1);
-                if (!imported) {
-                    console.info('Archive sync: nothing available on the server yet.');
-                    setSyncStatus('synced');
-                    return;
-                }
-            } else {
-                await pullBookmarksFromServer();
-                setBookmarkVersion((v) => v + 1);
-            }
-
-            const refreshedTotal = await getMessagesCount(activeChat.id);
-            const msgs = await fetchMessages(activeChat.id, 0);
-            dispatch({ type: 'RESET', msgs, total: refreshedTotal });
-            console.info(`Archive sync: loaded ${refreshedTotal} messages.`);
-            setSyncStatus('synced');
-        } catch (error) {
-            console.error('Failed to sync archive:', error);
-            setSyncStatus('error');
-        }
-    }, [activeChat.id, currentView, fetchMessages]);
 
     // Initial messages load
     useEffect(() => {
@@ -157,19 +116,13 @@ export function AppLayout() {
             dispatch({ type: 'SET_FETCHING', fetching: true });
             try {
                 const total = await getMessagesCount(activeChat.id);
-                if (total === 0) {
-                    await hydrateLocalArchiveFromServer();
-                    await pullBookmarksFromServer();
-                    setBookmarkVersion((v) => v + 1);
-                }
 
                 if (!isActive) {
                     return;
                 }
 
-                const refreshedTotal = await getMessagesCount(activeChat.id);
                 const msgs = await fetchMessages(activeChat.id, 0);
-                dispatch({ type: 'RESET', msgs, total: refreshedTotal });
+                dispatch({ type: 'RESET', msgs, total });
             } catch (error) {
                 console.error('Failed to load initial messages:', error);
                 if (isActive) {
@@ -183,46 +136,6 @@ export function AppLayout() {
             isActive = false;
         };
     }, [activeChat.id, currentView, fetchMessages, messages.length]);
-
-    useEffect(() => {
-        const timeoutId = window.setTimeout(() => {
-            void syncArchive();
-        }, 0);
-
-        return () => {
-            window.clearTimeout(timeoutId);
-        };
-    }, [chatRefreshToken, syncArchive]);
-
-    // Pull bookmarks from server on mount and on visibility change,
-    // independent of the current view.
-    useEffect(() => {
-        let isActive = true;
-        const pullBookmarks = async () => {
-            try {
-                await pullBookmarksFromServer();
-                if (isActive) {
-                    setBookmarkVersion((v) => v + 1);
-                }
-            } catch (error) {
-                console.warn('Failed to pull bookmarks from server:', error);
-            }
-        };
-
-        void pullBookmarks();
-
-        const handleVisibility = () => {
-            if (document.visibilityState === 'visible') {
-                void pullBookmarks();
-            }
-        };
-        document.addEventListener('visibilitychange', handleVisibility);
-
-        return () => {
-            isActive = false;
-            document.removeEventListener('visibilitychange', handleVisibility);
-        };
-    }, []);
 
     const loadLatestMessages = async () => {
         if (isFetching) return;
@@ -301,7 +214,6 @@ export function AppLayout() {
 
     const openMessageResult = (messageId: string) => {
         setMessageFocusRequest({ messageId, token: Date.now() });
-        setChatRefreshToken((token) => token + 1);
         setCurrentView('chat');
     };
 
@@ -320,7 +232,9 @@ export function AppLayout() {
 
     useEffect(() => {
         let isActive = true;
-        const timeoutId = window.setTimeout(async () => {
+        let timer: ReturnType<typeof setInterval>;
+
+        const check = async () => {
             try {
                 const response = await fetch('/api/health', { cache: 'no-store' });
                 if (!isActive) return;
@@ -330,19 +244,27 @@ export function AppLayout() {
                     setCloudStatus('offline');
                 }
             }
-        }, 0);
+        };
+
+        // Initial check
+        void check();
+
+        // Re-check every 30 seconds
+        timer = setInterval(check, 30_000);
+
+        // Also check on online/offline browser events
+        const handleOnline = () => { void check(); };
+        const handleOffline = () => { if (isActive) setCloudStatus('offline'); };
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
 
         return () => {
             isActive = false;
-            window.clearTimeout(timeoutId);
+            clearInterval(timer);
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
         };
     }, []);
-
-    useEffect(() => {
-        if (!syncStatus) return;
-        const timeoutId = window.setTimeout(() => setSyncStatus(null), 5000);
-        return () => window.clearTimeout(timeoutId);
-    }, [syncStatus]);
 
     const handleLogout = async () => {
         await logout();
@@ -355,43 +277,34 @@ export function AppLayout() {
             <header className={styles.header}>
                 <div className={styles.brand}>
                     <span className={styles.brandTitle}>Luciko</span>
-                    <span className={`${styles.cloudStatus} ${cloudStatus === 'ready' ? styles.cloudStatusReady : cloudStatus === 'offline' ? styles.cloudStatusOffline : styles.cloudStatusLoading}`}>
-                        {cloudStatus === 'ready' ? 'Cloud ready' : cloudStatus === 'offline' ? 'Offline mode' : 'Connecting'}
-                    </span>
-                    {syncStatus && (
-                        <span className={`${styles.syncStatus} ${syncStatus === 'error' ? styles.syncStatusError : styles.syncStatusSuccess}`}>
-                            {syncStatus === 'syncing' ? 'Syncing...' : syncStatus === 'synced' ? 'Synced' : 'Sync failed'}
-                        </span>
+                    {cloudStatus === 'ready' ? (
+                        <Cloud size={18} className={styles.cloudIcon} />
+                    ) : cloudStatus === 'offline' ? (
+                        <CloudOff size={18} className={styles.cloudIcon} />
+                    ) : (
+                        <Cloud size={18} className={styles.cloudIconLoading} />
                     )}
                 </div>
                 <div className={styles.nav}>
                     <button
                         onClick={() => {
-                            setChatRefreshToken((token) => token + 1);
                             setCurrentView('chat');
-                            void syncArchive(true);
                         }}
                         className={`${styles.navButton} ${currentView === 'chat' ? styles.navButtonActive : ''}`}
                     >
-                        <MessageSquare size={20} /> Chat
-                    </button>
-                    <button
-                        onClick={() => setCurrentView('posts')}
-                        className={`${styles.navButton} ${currentView === 'posts' ? styles.navButtonActive : ''}`}
-                    >
-                        <Newspaper size={20} /> Posts
+                        <MessageSquare size={20} /> <span className={styles.navLabel}>Chat</span>
                     </button>
                     <button
                         onClick={() => setCurrentView('search')}
                         className={`${styles.navButton} ${currentView === 'search' ? styles.navButtonActive : ''}`}
                     >
-                        <Search size={20} /> Search
+                        <Search size={20} /> <span className={styles.navLabel}>Search</span>
                     </button>
                     <button
                         onClick={() => setCurrentView('import')}
                         className={`${styles.navButton} ${currentView === 'import' ? styles.navButtonActive : ''}`}
                     >
-                        <Upload size={20} /> Import
+                        <Upload size={20} /> <span className={styles.navLabel}>Import</span>
                     </button>
                     <button
                         onClick={handleLogout}
@@ -417,7 +330,6 @@ export function AppLayout() {
                         onJumpToBookmark={jumpToMessage}
                         focusRequest={messageFocusRequest}
                         onFocusRequestHandled={handleMessageFocusHandled}
-                        bookmarkVersion={bookmarkVersion}
                     />
                 ) : currentView === 'import' ? (
                     <ImportPage />
@@ -430,7 +342,6 @@ export function AppLayout() {
                     <PostsPage
                         focusRequest={postFocusRequest}
                         onFocusRequestHandled={handlePostFocusHandled}
-                        bookmarkVersion={bookmarkVersion}
                     />
                 )}
             </div>

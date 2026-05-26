@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Chat, Message } from "../../types/chat";
 import { MessageList } from "../chat/MessageList";
-import { Bookmark, EyeOff, Eye } from "lucide-react";
-import { getBookmark, setBookmark, getHiddenItems, setHiddenItem } from "../../store/db";
-import { pushBookmarksToServer } from "../../store/archiveSync";
+import { Bookmark } from "lucide-react";
+import { getBookmark, setBookmark } from "../../store/db";
 import styles from "./ChatArea.module.css";
 import { format } from "date-fns";
 import messageListStyles from "../chat/MessageList.module.css";
@@ -19,12 +18,11 @@ interface ChatAreaProps {
   onJumpToBookmark?: (messageId: string) => Promise<boolean>;
   focusRequest?: { messageId: string; token: number } | null;
   onFocusRequestHandled?: () => void;
-  bookmarkVersion?: number;
 }
 
 const CURRENT_USER_ID = "Valerio Donati";
 
-export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOlder, hasNewer, onJumpToLatest, onJumpToBookmark, focusRequest, onFocusRequestHandled, bookmarkVersion }: ChatAreaProps) {
+export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOlder, hasNewer, onJumpToLatest, onJumpToBookmark, focusRequest, onFocusRequestHandled }: ChatAreaProps) {
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -34,8 +32,6 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   const [bookmarkedMessageId, setBookmarkedMessageId] = useState<string | null>(null);
   const [isBookmarkReady, setIsBookmarkReady] = useState(false);
   const [isBookmarkScrollPending, setIsBookmarkScrollPending] = useState(false);
-  const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(new Set());
-  const [showHidden, setShowHidden] = useState(false);
   const [stickyDateLabel, setStickyDateLabel] = useState<string | null>(null);
 
   const scrollToBottom = async () => {
@@ -121,7 +117,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     return () => {
       isActive = false;
     };
-  }, [activeChat?.id, bookmarkVersion]);
+  }, [activeChat?.id]);
 
   // Reset auto-scroll flag when the active chat changes.
   useEffect(() => {
@@ -155,37 +151,12 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   }, [isBookmarkReady, bookmarkedMessageId, messages.length, onJumpToBookmark]);
 
   useEffect(() => {
-    let isActive = true;
-    if (!activeChat?.id) return;
-    const scope = `chat:${activeChat.id}`;
-
-    const load = async () => {
-      try {
-        const hidden = await getHiddenItems(scope);
-        if (isActive) {
-          setHiddenMessageIds(hidden);
-        }
-      } catch (error) {
-        if (isActive) {
-          console.warn("Failed to read hidden messages:", error);
-        }
-      }
-    };
-
-    load();
-    return () => {
-      isActive = false;
-    };
-  }, [activeChat?.id, bookmarkVersion]);
-
-  useEffect(() => {
     if (!activeChat?.id) return;
     if (!isBookmarkReady) return;
 
     const persist = async () => {
       try {
         await setBookmark(activeChat.id, bookmarkedMessageId);
-        await pushBookmarksToServer();
       } catch (error) {
         console.warn("Failed to persist bookmark to storage:", error);
       }
@@ -230,33 +201,8 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     };
   }, [activeChat?.id, focusRequest?.messageId, focusRequest?.token, onJumpToBookmark, onFocusRequestHandled]);
 
-  const chatId = activeChat?.id ?? null;
-
-  const handleToggleHidden = useCallback(async (messageId: string) => {
-    if (!chatId) return;
-    const scope = `chat:${chatId}`;
-    const next = new Set(hiddenMessageIds);
-    const isHidden = next.has(messageId);
-    if (isHidden) {
-      next.delete(messageId);
-    } else {
-      next.add(messageId);
-    }
-    setHiddenMessageIds(next);
-    try {
-      await setHiddenItem(scope, messageId, !isHidden);
-    } catch (error) {
-      console.warn("Failed to persist hidden message:", error);
-    }
-  }, [chatId, hiddenMessageIds]);
-
-  const visibleMessages = useMemo(
-    () => (showHidden ? messages : messages.filter((msg) => !hiddenMessageIds.has(msg.id))),
-    [messages, showHidden, hiddenMessageIds]
-  );
-
   useEffect(() => {
-    if (visibleMessages.length === 0) {
+    if (messages.length === 0) {
       hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
       hiddenMarkerRef.current = null;
       requestAnimationFrame(() => setStickyDateLabel(null));
@@ -267,7 +213,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     if (!container) {
       hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
       hiddenMarkerRef.current = null;
-      setStickyDateLabel(format(visibleMessages[0].timestamp, "MMMM d, yyyy"));
+      setStickyDateLabel(format(messages[0].timestamp, "MMMM d, yyyy"));
       return;
     }
 
@@ -278,14 +224,14 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
       if (markers.length === 0) {
         hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
         hiddenMarkerRef.current = null;
-        const nextLabel = format(visibleMessages[0].timestamp, "MMMM d, yyyy");
+        const nextLabel = format(messages[0].timestamp, "MMMM d, yyyy");
         requestAnimationFrame(() => setStickyDateLabel(nextLabel));
         return;
       }
 
       const containerTop = container.getBoundingClientRect().top;
       const threshold = containerTop + stickyOffset;
-      let nextLabel = markers[0].dataset.dateLabel ?? format(visibleMessages[0].timestamp, "MMMM d, yyyy");
+      let nextLabel = markers[0].dataset.dateLabel ?? format(messages[0].timestamp, "MMMM d, yyyy");
       let nextMarker: HTMLElement | null = null;
 
       for (const marker of markers) {
@@ -319,7 +265,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
       hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
       hiddenMarkerRef.current = null;
     };
-  }, [visibleMessages]);
+  }, [messages]);
 
   useEffect(() => {
     if (!onLoadOlder || !hasOlder) return;
@@ -400,16 +346,6 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
               <Bookmark size={16} />
             </button>
           )}
-          {hiddenMessageIds.size > 0 && (
-            <button
-              type="button"
-              className={styles.scrollToBookmarkButton}
-              onClick={() => setShowHidden((current) => !current)}
-              aria-label={showHidden ? "Hide hidden messages" : "Show hidden messages"}
-            >
-              {showHidden ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          )}
         </div>
       </div>
 
@@ -422,12 +358,10 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
         {/* Sentinel for infinite scroll (load older messages) */}
         <div ref={topSentinelRef} className={styles.sentinel} />
         <MessageList
-          messages={visibleMessages}
+          messages={messages}
           currentUserId={CURRENT_USER_ID}
           bookmarkedMessageId={bookmarkedMessageId}
           onBookmark={handleBookmark}
-          hiddenMessageIds={hiddenMessageIds}
-          onToggleHidden={handleToggleHidden}
         />
         {/* Sentinel for infinite scroll (load newer messages) */}
         <div ref={bottomSentinelRef} className={styles.sentinel} />

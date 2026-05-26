@@ -9,9 +9,7 @@ import { parseGoogleChatZip } from '../../importers/googlechat/parser';
 import { parseOldGoogleChatCsv } from '../../importers/googlechat/oldCsv';
 import { parseIMessageJson } from '../../importers/imessage/parser';
 import { parseGmailZip } from '../../importers/gmail/parser';
-import { getMessagesCount, getPostsCount, importMessages, importPosts } from '../../store/db';
-import { pushLocalArchiveToServer, pushBookmarksToServer, hydrateLocalArchiveFromServer, pullBookmarksFromServer } from '../../store/archiveSync';
-import type { PushProgress } from '../../store/archiveSync';
+import { importMessages, importPosts } from '../../store/db';
 import { TARGET_CHAT_ID } from '../../constants/chat';
 import styles from './ImportPage.module.css';
 
@@ -106,7 +104,7 @@ const HANDLERS: ImportHandler[] = [
 
 export function ImportPage() {
     const [isDragging, setIsDragging] = useState(false);
-    const [importStatus, setImportStatus] = useState<'idle' | 'processing' | 'syncing' | 'success' | 'error'>('idle');
+    const [importStatus, setImportStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
     const [stats, setStats] = useState<{ total: number; sourceTotal?: number; inserted: number; updated: number }>({
         total: 0,
         inserted: 0,
@@ -114,11 +112,6 @@ export function ImportPage() {
     });
     const [errorMessage, setErrorMessage] = useState<string>('');
     const [logs, setLogs] = useState<string[]>([]);
-    const [syncProgress, setSyncProgress] = useState<PushProgress | null>(null);
-    const [manualSyncStatus, setManualSyncStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
-    const [manualSyncMessage, setManualSyncMessage] = useState<string>('');
-    const [pullStatus, setPullStatus] = useState<'idle' | 'syncing' | 'success' | 'error'>('idle');
-    const [pullMessage, setPullMessage] = useState<string>('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const setDragging = (value: boolean) => (e: React.DragEvent) => {
@@ -139,62 +132,6 @@ export function ImportPage() {
         const file = e.target.files?.[0];
         if (file) {
             handleFile(file);
-        }
-    };
-
-    const formatSyncProgress = (progress: PushProgress | null) => {
-        if (!progress) return '';
-        const resumed = progress.resumedFrom > 0
-            ? ` (resumed from ${progress.resumedFrom.toLocaleString()})`
-            : '';
-        return `Uploading ${progress.entity}: ${progress.uploaded.toLocaleString()} / ${progress.total.toLocaleString()}${resumed}`;
-    };
-
-    const syncLocalArchive = async () => {
-        setManualSyncStatus('syncing');
-        setManualSyncMessage('');
-        setSyncProgress(null);
-
-        try {
-            const [messageCount, postCount] = await Promise.all([
-                getMessagesCount(TARGET_CHAT_ID),
-                getPostsCount()
-            ]);
-            if (messageCount === 0 && postCount === 0) {
-                setManualSyncStatus('error');
-                setManualSyncMessage('No local archive data found in this browser.');
-                return;
-            }
-
-            await pushLocalArchiveToServer(setSyncProgress);
-            await pushBookmarksToServer();
-            setManualSyncStatus('success');
-            setManualSyncMessage(`Cloud sync complete: ${messageCount.toLocaleString()} messages and ${postCount.toLocaleString()} posts uploaded.`);
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown sync error';
-            setManualSyncStatus('error');
-            setManualSyncMessage(message);
-        }
-    };
-
-    const pullFromServer = async () => {
-        setPullStatus('syncing');
-        setPullMessage('');
-
-        try {
-            const imported = await hydrateLocalArchiveFromServer();
-            await pullBookmarksFromServer();
-            setPullStatus('success');
-            if (imported) {
-                const count = await getMessagesCount(TARGET_CHAT_ID);
-                setPullMessage(`Pulled ${count.toLocaleString()} messages from server.`);
-            } else {
-                setPullMessage('No data available on the server.');
-            }
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            setPullStatus('error');
-            setPullMessage(message);
         }
     };
 
@@ -225,8 +162,6 @@ export function ImportPage() {
     const handleFile = async (file: File) => {
         setImportStatus('processing');
         setErrorMessage('');
-        setManualSyncMessage('');
-        setSyncProgress(null);
 
         try {
             const detected = await detectImportType(file);
@@ -258,10 +193,6 @@ export function ImportPage() {
                 updated: importStats.updated
             });
             setLogs(combinedLogs);
-            setImportStatus('syncing');
-
-            await pushLocalArchiveToServer(setSyncProgress);
-            await pushBookmarksToServer();
             setImportStatus('success');
 
         } catch (error: unknown) {
@@ -306,13 +237,6 @@ export function ImportPage() {
                 </div>
             )}
 
-            {importStatus === 'syncing' && (
-                <div style={{ marginTop: '30px', textAlign: 'center' }}>
-                    <p>Import complete. Syncing archive to cloud...</p>
-                    {syncProgress && <p className={styles.syncProgress}>{formatSyncProgress(syncProgress)}</p>}
-                </div>
-            )}
-
             {importStatus === 'success' && (
                 <div className={`${styles.statusBase} ${styles.statusSuccess}`}>
                     <CheckCircle size={24} color="var(--color-primary)" className={styles.statusIcon} />
@@ -324,7 +248,6 @@ export function ImportPage() {
                             {' '}Imported {stats.inserted} new items.
                             {stats.updated > 0 ? ` Updated ${stats.updated} existing items.` : ''}
                             {' '}{stats.total - stats.inserted - stats.updated} duplicates skipped.
-                            {' '}Cloud sync complete.
                         </p>
                     </div>
                 </div>
@@ -347,46 +270,6 @@ export function ImportPage() {
                     <li>Keep the media files included if available.</li>
                     <li>Upload the ZIP file here.</li>
                 </ul>
-            </div>
-
-            <div className={styles.syncPanel}>
-                <div>
-                    <h3 className={styles.syncTitle}>Cloud sync</h3>
-                    <p className={styles.syncText}>
-                        Push local data to the server or pull data from the server onto this device.
-                    </p>
-                    {syncProgress && manualSyncStatus === 'syncing' && (
-                        <p className={styles.syncProgress}>{formatSyncProgress(syncProgress)}</p>
-                    )}
-                    {manualSyncMessage && (
-                        <p className={manualSyncStatus === 'error' ? styles.syncError : styles.syncSuccess}>
-                            {manualSyncMessage}
-                        </p>
-                    )}
-                    {pullMessage && (
-                        <p className={pullStatus === 'error' ? styles.syncError : styles.syncSuccess}>
-                            {pullMessage}
-                        </p>
-                    )}
-                </div>
-                <div className={styles.syncButtons}>
-                    <button
-                        type="button"
-                        className={styles.syncButton}
-                        disabled={manualSyncStatus === 'syncing' || importStatus === 'processing' || importStatus === 'syncing'}
-                        onClick={syncLocalArchive}
-                    >
-                        {manualSyncStatus === 'syncing' ? 'Pushing...' : 'Push to server'}
-                    </button>
-                    <button
-                        type="button"
-                        className={styles.syncButton}
-                        disabled={pullStatus === 'syncing' || importStatus === 'processing' || importStatus === 'syncing'}
-                        onClick={pullFromServer}
-                    >
-                        {pullStatus === 'syncing' ? 'Pulling...' : 'Pull from server'}
-                    </button>
-                </div>
             </div>
 
             {logs.length > 0 && (

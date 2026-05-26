@@ -13,7 +13,6 @@ import {
   setBookmark,
   setHiddenItem,
 } from "../../store/db";
-import { pushBookmarksToServer } from "../../store/archiveSync";
 import type { PostRecord } from "../../types/posts";
 import { normalizeMojibakeText } from "../../utils/text";
 
@@ -33,10 +32,9 @@ const BOOKMARK_SCROLL_OFFSET = -70;
 interface PostsPageProps {
   focusRequest?: { postId: string; token: number } | null;
   onFocusRequestHandled?: () => void;
-  bookmarkVersion?: number;
 }
 
-export function PostsPage({ focusRequest, onFocusRequestHandled, bookmarkVersion }: PostsPageProps) {
+export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProps) {
   const [posts, setPosts] = useState<Post[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -199,7 +197,7 @@ export function PostsPage({ focusRequest, onFocusRequestHandled, bookmarkVersion
     return () => {
       isActive = false;
     };
-  }, [bookmarkVersion]);
+  }, []);
 
   useEffect(() => {
     let isActive = true;
@@ -227,7 +225,6 @@ export function PostsPage({ focusRequest, onFocusRequestHandled, bookmarkVersion
     const persist = async () => {
       try {
         await setBookmark("posts", bookmarkedPostId);
-        await pushBookmarksToServer();
       } catch (err) {
         console.warn("Failed to persist posts bookmark:", err);
       }

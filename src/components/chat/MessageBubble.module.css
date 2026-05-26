@@ -166,7 +166,6 @@
 }
 
 .bubbleBase {
-  max-width: 65%;
   padding: 6px 7px 8px 9px;
   border-radius: 7.5px;
   box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
@@ -174,7 +173,6 @@
 }
 
 .bubbleWithAudio {
-  max-width: min(92vw, 420px);
   min-width: min(300px, calc(100vw - 88px));
 }
 
@@ -362,21 +360,6 @@
   display: inline-flex;
   flex-direction: column;
   gap: 4px;
-}
-
-.hideButtonActive {
-  background: #4b5563;
-  color: #ffffff;
-  border-color: #4b5563;
-}
-
-.hideButtonActive:hover {
-  background: #4b5563;
-}
-
-.hideButtonActive svg {
-  color: #ffffff;
-  stroke: #ffffff;
 }
 
 .reactionsRow {

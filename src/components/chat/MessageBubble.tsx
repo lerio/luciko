@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { format } from "date-fns";
-import { Bookmark, Check, CheckCheck, Download, EyeOff } from "lucide-react";
+import { Bookmark, Check, CheckCheck, Download } from "lucide-react";
 import { getAttachment } from "../../store/db";
 import type { Attachment, Message } from "../../types/chat";
 import { isGmailGoomojiUrl, resolveGmailGoomoji } from "../../utils/gmailGoomoji";
@@ -17,9 +17,7 @@ interface MessageBubbleProps {
   message: Message;
   isMe: boolean;
   isBookmarked: boolean;
-  isHidden: boolean;
   onBookmark: (messageId: string) => void;
-  onToggleHidden: (messageId: string) => void;
 }
 
 interface AttachmentPreviewProps {
@@ -333,9 +331,7 @@ export function MessageBubble({
   message,
   isMe,
   isBookmarked,
-  isHidden,
   onBookmark,
-  onToggleHidden,
 }: MessageBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const content = normalizeMojibakeText(message.content) ?? message.content;
@@ -401,14 +397,6 @@ export function MessageBubble({
               >
                 <Bookmark size={14} />
               </button>
-              <button
-                type="button"
-                className={`${styles.bookmarkButton} ${isHidden ? styles.hideButtonActive : ""}`}
-                onClick={() => onToggleHidden(message.id)}
-                aria-label={isHidden ? "Unhide message" : "Hide message"}
-              >
-                <EyeOff size={14} />
-              </button>
             </div>
           </div>
         )}
@@ -417,7 +405,7 @@ export function MessageBubble({
         >
           <div className={styles.messageContent}>
             {/* Sender Name (if not me, or always if debugging) */}
-            {!isMe && (
+            {!isMe && senderName !== 'Luciana Milella' && (
               <div className={styles.senderName}>{senderName}</div>
             )}
             {quotedText && (
@@ -503,14 +491,6 @@ export function MessageBubble({
                 aria-label={isBookmarked ? "Remove bookmark" : "Add bookmark"}
               >
                 <Bookmark size={14} />
-              </button>
-              <button
-                type="button"
-                className={`${styles.bookmarkButton} ${isHidden ? styles.hideButtonActive : ""}`}
-                onClick={() => onToggleHidden(message.id)}
-                aria-label={isHidden ? "Unhide message" : "Hide message"}
-              >
-                <EyeOff size={14} />
               </button>
             </div>
           </div>
