@@ -10,7 +10,8 @@ const VALERIO_NAME = 'Valerio Donati';
 const EMAIL_TO_NAME: Record<string, string> = {
     'luci.milella@gmail.com': LUCY_NAME,
     'luci-ko_1002@ezweb.ne.jp': LUCY_NAME,
-    'valerio.donati@gmail.com': VALERIO_NAME
+    'valerio.donati@gmail.com': VALERIO_NAME,
+    'valerio.donati': VALERIO_NAME
 };
 
 const normalizeHeader = (value: string) => value.trim().toLowerCase();
@@ -54,7 +55,13 @@ function splitAttachmentPaths(raw: string): string[] {
 
 function resolveSender(email: string) {
     const normalized = email.trim().toLowerCase();
-    return EMAIL_TO_NAME[normalized] ?? email.trim();
+    if (EMAIL_TO_NAME[normalized]) return EMAIL_TO_NAME[normalized];
+    // Also try matching just the local part (before @), since some Gmail export
+    // rows omit the domain for SMS-originated messages.
+    for (const [key, name] of Object.entries(EMAIL_TO_NAME)) {
+        if (key.startsWith(normalized + '@')) return name;
+    }
+    return email.trim();
 }
 
 function makePathCandidates(path: string, baseDir: string): string[] {

@@ -66,7 +66,11 @@ function extractTextContent(node: Element | null): string {
     };
 
     const text = walk(clone);
-    return text.replace(/\n{3,}/g, '\n\n').trim();
+    return text
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n[ \t]+/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 }
 
 function resolveAttachmentPath(baseDir: string, path: string) {
