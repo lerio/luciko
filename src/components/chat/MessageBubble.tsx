@@ -339,7 +339,7 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const content = normalizeMojibakeText(message.content) ?? message.content;
-  const senderName = normalizeMojibakeText(message.senderId) ?? message.senderId;
+
   const quotedText = normalizeMojibakeText(message.quotedText);
   const quotedSender = normalizeMojibakeText(message.quotedSender);
   const hasAudioAttachment = Boolean(
