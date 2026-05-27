@@ -155,6 +155,7 @@
   display: flex;
   align-items: flex-start;
   gap: 6px;
+  min-width: 0;
 }
 
 .messageRowMe {
@@ -170,6 +171,7 @@
   border-radius: 7.5px;
   box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
   position: relative;
+  max-width: 85%;
 }
 
 .bubbleWithAudio {

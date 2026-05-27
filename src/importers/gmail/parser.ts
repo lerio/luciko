@@ -155,7 +155,7 @@ export async function parseGmailZip(file: File, chatId: string, zipInput?: JSZip
         const senderEmail = row['sender email']?.trim() ?? '';
         const recipientEmail = row['recipient email']?.trim() ?? '';
         const subject = row.subject?.trim() ?? '';
-        const body = (row.content?.trim() ?? '').replace(/\n(?!\n)/g, ' ');
+        const body = (row.content?.trim() ?? '').replace(/(?<!\n)\n(?!\n)/g, ' ');
         const timestampRaw = row.timestamp?.trim() ?? '';
         const attachmentPathRaw = row['attachment local filepath'] ?? '';
 
