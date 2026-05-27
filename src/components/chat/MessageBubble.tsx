@@ -305,19 +305,23 @@ function renderContent(content: string, isGmail: boolean) {
       const subject =
         separatorIndex >= 0
           ? content.slice(0, separatorIndex)
-          : content.split("\n")[0] || "";
+          : "";
       const body =
         separatorIndex >= 0
           ? content.slice(separatorIndex + 2)
-          : content.split("\n").slice(1).join("\n");
+          : content;
       const cleanedBody = stripQuotedReply(body);
       const bodyLines = cleanedBody.split("\n");
 
       return (
         <>
-          <strong>{subject}</strong>
-          <br />
-          <br />
+          {subject && (
+            <>
+              <strong>{subject}</strong>
+              <br />
+              <br />
+            </>
+          )}
           {renderLines(bodyLines, "gmail")}
         </>
       );
@@ -404,10 +408,6 @@ export function MessageBubble({
           className={`${styles.bubbleBase} ${isMe ? styles.bubbleMe : styles.bubbleOther} ${hasAudioAttachment ? styles.bubbleWithAudio : ""}`}
         >
           <div className={styles.messageContent}>
-            {/* Sender Name (if not me, or always if debugging) */}
-            {!isMe && senderName !== 'Luciana Milella' && (
-              <div className={styles.senderName}>{senderName}</div>
-            )}
             {quotedText && (
               <div
                 className={`${styles.replyBubble} ${isMe ? styles.replyBubbleMe : styles.replyBubbleOther}`}

@@ -22,14 +22,27 @@ interface ChatAreaProps {
 
 const CURRENT_USER_ID = "Valerio Donati";
 
-export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOlder, hasNewer, onJumpToLatest, onJumpToBookmark, focusRequest, onFocusRequestHandled }: ChatAreaProps) {
+export function ChatArea({
+  activeChat,
+  messages,
+  onLoadOlder,
+  onLoadNewer,
+  hasOlder,
+  hasNewer,
+  onJumpToLatest,
+  onJumpToBookmark,
+  focusRequest,
+  onFocusRequestHandled,
+}: ChatAreaProps) {
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const bookmarkLoadTokenRef = useRef(0);
   const initialAutoScrollRef = useRef(true);
   const hiddenMarkerRef = useRef<HTMLElement | null>(null);
-  const [bookmarkedMessageId, setBookmarkedMessageId] = useState<string | null>(null);
+  const [bookmarkedMessageId, setBookmarkedMessageId] = useState<string | null>(
+    null,
+  );
   const [isBookmarkReady, setIsBookmarkReady] = useState(false);
   const [isBookmarkScrollPending, setIsBookmarkScrollPending] = useState(false);
   const [stickyDateLabel, setStickyDateLabel] = useState<string | null>(null);
@@ -54,7 +67,8 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     if (!added) return;
     requestAnimationFrame(() => {
       const nextScrollHeight = container.scrollHeight;
-      container.scrollTop = prevScrollTop + (nextScrollHeight - prevScrollHeight);
+      container.scrollTop =
+        prevScrollTop + (nextScrollHeight - prevScrollHeight);
     });
   }, [onLoadOlder]);
 
@@ -66,7 +80,9 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   const handleBookmark = useCallback((messageId: string) => {
     // Invalidate any in-flight bookmark load so it cannot overwrite user intent.
     bookmarkLoadTokenRef.current += 1;
-    setBookmarkedMessageId((current) => (current === messageId ? null : messageId));
+    setBookmarkedMessageId((current) =>
+      current === messageId ? null : messageId,
+    );
   }, []);
 
   const handleScrollToBookmark = useCallback(async () => {
@@ -85,7 +101,6 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
       }
     }
   }, [bookmarkedMessageId, onJumpToBookmark]);
-
 
   useEffect(() => {
     let isActive = true;
@@ -174,7 +189,8 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   }, [bookmarkedMessageId, isBookmarkScrollPending, messages.length]);
 
   useEffect(() => {
-    if (!focusRequest?.messageId || !activeChat?.id || !onJumpToBookmark) return;
+    if (!focusRequest?.messageId || !activeChat?.id || !onJumpToBookmark)
+      return;
 
     let isActive = true;
     const jump = async () => {
@@ -183,7 +199,9 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
         const didJump = await onJumpToBookmark(focusRequest.messageId);
         if (!isActive || !didJump) return;
 
-        const target = document.getElementById(`message-${focusRequest.messageId}`);
+        const target = document.getElementById(
+          `message-${focusRequest.messageId}`,
+        );
         if (target) {
           target.scrollIntoView({ behavior: "smooth", block: "start" });
         }
@@ -199,11 +217,19 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     return () => {
       isActive = false;
     };
-  }, [activeChat?.id, focusRequest?.messageId, focusRequest?.token, onJumpToBookmark, onFocusRequestHandled]);
+  }, [
+    activeChat?.id,
+    focusRequest?.messageId,
+    focusRequest?.token,
+    onJumpToBookmark,
+    onFocusRequestHandled,
+  ]);
 
   useEffect(() => {
     if (messages.length === 0) {
-      hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+      hiddenMarkerRef.current?.classList.remove(
+        messageListStyles.dateRowHidden,
+      );
       hiddenMarkerRef.current = null;
       requestAnimationFrame(() => setStickyDateLabel(null));
       return;
@@ -211,7 +237,9 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
 
     const container = messagesRef.current;
     if (!container) {
-      hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+      hiddenMarkerRef.current?.classList.remove(
+        messageListStyles.dateRowHidden,
+      );
       hiddenMarkerRef.current = null;
       setStickyDateLabel(format(messages[0].timestamp, "MMMM d, yyyy"));
       return;
@@ -220,9 +248,13 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     const stickyOffset = 10;
 
     const updateStickyDate = () => {
-      const markers = Array.from(container.querySelectorAll<HTMLElement>("[data-date-marker='true']"));
+      const markers = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-date-marker='true']"),
+      );
       if (markers.length === 0) {
-        hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+        hiddenMarkerRef.current?.classList.remove(
+          messageListStyles.dateRowHidden,
+        );
         hiddenMarkerRef.current = null;
         const nextLabel = format(messages[0].timestamp, "MMMM d, yyyy");
         requestAnimationFrame(() => setStickyDateLabel(nextLabel));
@@ -231,7 +263,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
 
       const containerTop = container.getBoundingClientRect().top;
       const threshold = containerTop + stickyOffset;
-      let nextLabel = markers[0].dataset.dateLabel ?? format(messages[0].timestamp, "MMMM d, yyyy");
+      let nextLabel: string | null = markers[0].dataset.dateLabel ?? format(messages[0].timestamp, "MMMM d, yyyy");
       let nextMarker: HTMLElement | null = null;
 
       for (const marker of markers) {
@@ -244,7 +276,9 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
       }
 
       if (hiddenMarkerRef.current && hiddenMarkerRef.current !== nextMarker) {
-        hiddenMarkerRef.current.classList.remove(messageListStyles.dateRowHidden);
+        hiddenMarkerRef.current.classList.remove(
+          messageListStyles.dateRowHidden,
+        );
       }
       if (nextMarker) {
         nextMarker.classList.add(messageListStyles.dateRowHidden);
@@ -262,7 +296,9 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
-      hiddenMarkerRef.current?.classList.remove(messageListStyles.dateRowHidden);
+      hiddenMarkerRef.current?.classList.remove(
+        messageListStyles.dateRowHidden,
+      );
       hiddenMarkerRef.current = null;
     };
   }, [messages]);
@@ -271,11 +307,14 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     if (!onLoadOlder || !hasOlder) return;
 
     const root = messagesRef.current;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting) {
-        handleLoadOlder();
-      }
-    }, { root, rootMargin: "200px 0px", threshold: 0 });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          handleLoadOlder();
+        }
+      },
+      { root, rootMargin: "200px 0px", threshold: 0 },
+    );
 
     if (topSentinelRef.current) {
       observer.observe(topSentinelRef.current);
@@ -288,11 +327,14 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
     if (!onLoadNewer || !hasNewer) return;
 
     const root = messagesRef.current;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting) {
-        handleLoadNewer();
-      }
-    }, { root, rootMargin: "200px 0px", threshold: 0 });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          handleLoadNewer();
+        }
+      },
+      { root, rootMargin: "200px 0px", threshold: 0 },
+    );
 
     if (bottomSentinelRef.current) {
       observer.observe(bottomSentinelRef.current);
@@ -302,9 +344,7 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   }, [handleLoadNewer, hasNewer, onLoadNewer]);
   if (!activeChat) {
     return (
-      <main
-        className={`${styles.mainBase} ${styles.emptyState}`}
-      >
+      <main className={`${styles.mainBase} ${styles.emptyState}`}>
         <div className={styles.emptyStateText}>
           <h2>Welcome to Luciko</h2>
           <p style={{ marginTop: "10px" }}>Select a chat to start reading.</p>
@@ -314,15 +354,11 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
   }
 
   return (
-    <main
-      className={`${styles.mainBase} ${styles.chatMain}`}
-    >
+    <main className={`${styles.mainBase} ${styles.chatMain}`}>
       {/* Background could be an image */}
       <div className={styles.header}>
         <div className={styles.headerInfo}>
-          <div
-            className={styles.avatar}
-          >
+          <div className={styles.avatar}>
             {activeChat.avatarUrl ? (
               <img
                 src={activeChat.avatarUrl}
@@ -330,7 +366,9 @@ export function ChatArea({ activeChat, messages, onLoadOlder, onLoadNewer, hasOl
                 className={styles.avatarImage}
               />
             ) : (
-              <span className={styles.avatarFallback}>{activeChat.name.charAt(0)}</span>
+              <span className={styles.avatarFallback}>
+                {activeChat.name.charAt(0)}
+              </span>
             )}
           </div>
           <span style={{ fontWeight: "bold" }}>{activeChat.name}</span>

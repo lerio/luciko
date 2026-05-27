@@ -104,7 +104,7 @@
 }
 
 .sentinel {
-  height: 10px;
+  height: 0;
   flex-shrink: 0;
 }
 
