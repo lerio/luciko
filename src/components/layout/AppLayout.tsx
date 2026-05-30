@@ -8,7 +8,7 @@ import { Upload, MessageSquare, Search, LogOut, Cloud, CloudOff } from 'lucide-r
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 import { SearchPage } from '../search/SearchPage';
-import { logout } from '../../store/auth';
+import { useAuth, getAuthHeaders } from '../../contexts/AuthContext';
 
 const PAGE_SIZE = 100;
 
@@ -236,7 +236,7 @@ export function AppLayout() {
 
         const check = async () => {
             try {
-                const response = await fetch('/api/health', { cache: 'no-store' });
+                const response = await fetch('/api/health', { cache: 'no-store', headers: getAuthHeaders() });
                 if (!isActive) return;
                 setCloudStatus(response.ok ? 'ready' : 'offline');
             } catch {
@@ -266,9 +266,10 @@ export function AppLayout() {
         };
     }, []);
 
+    const { logout } = useAuth();
+
     const handleLogout = async () => {
         await logout();
-        window.location.reload();
     };
 
     return (

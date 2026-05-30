@@ -18,18 +18,14 @@ type Env = {
 };
 
 const BASIC_AUTH_USER = 'luciko';
-const AUTH_COOKIE = 'luciko_auth';
-const COOKIE_MAX_AGE = 31536000; // 1 year
 
-function parseCookies(header: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq >= 0) {
-      result[part.slice(0, eq).trim()] = part.slice(eq + 1).trim();
-    }
+function timingSafeEqual(left: string, right: string) {
+  if (left.length !== right.length) return false;
+  let result = 0;
+  for (let i = 0; i < left.length; i += 1) {
+    result |= left.charCodeAt(i) ^ right.charCodeAt(i);
   }
-  return result;
+  return result === 0;
 }
 
 async function signToken(payload: string, secret: string): Promise<string> {
@@ -47,52 +43,31 @@ async function signToken(payload: string, secret: string): Promise<string> {
     .join('');
 }
 
-async function createAuthToken(secret: string): Promise<string> {
-  const payload = JSON.stringify({ u: 'luciko', ts: Date.now() });
+function createTokenPayload(deviceId: string): string {
+  return JSON.stringify({ u: 'luciko', ts: Date.now(), did: deviceId });
+}
+
+async function createAuthToken(secret: string, deviceId: string): Promise<string> {
+  const payload = createTokenPayload(deviceId);
   const payloadB64 = btoa(payload);
   const sig = await signToken(payloadB64, secret);
   return `${payloadB64}.${sig}`;
 }
 
-async function verifyToken(token: string, secret: string): Promise<boolean> {
+async function verifyToken(token: string, secret: string): Promise<{ valid: boolean; deviceId?: string }> {
   const idx = token.lastIndexOf('.');
-  if (idx < 0) return false;
-  const payload = token.slice(0, idx);
+  if (idx < 0) return { valid: false };
+  const payloadB64 = token.slice(0, idx);
   const sig = token.slice(idx + 1);
-  const expectedSig = await signToken(payload, secret);
-  return timingSafeEqual(sig, expectedSig);
-}
+  const expectedSig = await signToken(payloadB64, secret);
+  if (!timingSafeEqual(sig, expectedSig)) return { valid: false };
 
-function setAuthCookie(response: Response, token: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set(
-    'Set-Cookie',
-    `${AUTH_COOKIE}=${token}; Path=/; SameSite=Lax; Secure; Max-Age=${COOKIE_MAX_AGE}`,
-  );
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-function clearAuthCookie(response: Response): Response {
-  const headers = new Headers(response.headers);
-  headers.set('Set-Cookie', `${AUTH_COOKIE}=; Path=/; SameSite=Lax; Secure; Max-Age=0`);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-function timingSafeEqual(left: string, right: string) {
-  if (left.length !== right.length) return false;
-  let result = 0;
-  for (let i = 0; i < left.length; i += 1) {
-    result |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  try {
+    const payload = JSON.parse(atob(payloadB64));
+    return { valid: true, deviceId: payload.did };
+  } catch {
+    return { valid: false };
   }
-  return result === 0;
 }
 
 function parseBasicAuth(request: Request) {
@@ -116,7 +91,7 @@ function parseBasicAuth(request: Request) {
   }
 }
 
-function isAuthenticated(request: Request, env: Env) {
+function basicAuthValid(request: Request, env: Env): boolean {
   const expectedPassword = env.LUCIKO_BASIC_AUTH_PASSWORD;
   if (!expectedPassword) return false;
 
@@ -129,56 +104,101 @@ function isAuthenticated(request: Request, env: Env) {
   );
 }
 
-async function checkAuth(
-  request: Request,
-  env: Env,
-): Promise<{ authenticated: boolean; newToken?: string }> {
-  const secret = env.LUCIKO_BASIC_AUTH_PASSWORD;
-  if (!secret) return { authenticated: false };
-
-  // 1. Check signed cookie
-  const cookieHeader = request.headers.get('Cookie') || '';
-  const cookies = parseCookies(cookieHeader);
-  const cookieToken = cookies[AUTH_COOKIE];
-  if (cookieToken && (await verifyToken(cookieToken, secret))) {
-    return { authenticated: true };
-  }
-
-  // 2. Check Bearer token header
+function extractBearerToken(request: Request): string | null {
   const authHeader = request.headers.get('Authorization') || '';
   if (authHeader.startsWith('Bearer ')) {
-    const bearerToken = authHeader.slice(7);
-    if (await verifyToken(bearerToken, secret)) {
-      return { authenticated: true };
-    }
+    return authHeader.slice(7);
   }
-
-  // 3. Fall back to Basic Auth
-  if (isAuthenticated(request, env)) {
-    const newToken = await createAuthToken(secret);
-    return { authenticated: true, newToken };
-  }
-
-  return { authenticated: false };
-}
-
-function authChallenge() {
-  return new Response('Authentication required', {
-    status: 401,
-    headers: {
-      'WWW-Authenticate': 'Basic realm="luciko", charset="UTF-8"',
-      'cache-control': 'no-store',
-    },
-  });
+  return null;
 }
 
 function json(body: unknown, init?: ResponseInit) {
   return Response.json(body, {
-    headers: {
-      'cache-control': 'no-store',
-    },
+    headers: { 'cache-control': 'no-store' },
     ...init,
   });
+}
+
+// --- D1 device operations ---
+
+async function registerDevice(
+  db: NonNullable<Env['LUCIKO_DB']>,
+  deviceId: string,
+  userAgent: string,
+): Promise<void> {
+  const now = Date.now();
+  await db
+    .prepare(
+      'INSERT INTO devices (id, name, public_key, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)',
+    )
+    .bind(deviceId, userAgent.slice(0, 255), '', now, now)
+    .run();
+}
+
+async function isDeviceRevoked(
+  db: NonNullable<Env['LUCIKO_DB']>,
+  deviceId: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare('SELECT revoked_at FROM devices WHERE id = ?')
+    .bind(deviceId)
+    .all<{ revoked_at: number | null }>();
+  if (result.results.length === 0) return true; // unknown device = revoked
+  return result.results[0].revoked_at !== null;
+}
+
+async function revokeDevice(
+  db: NonNullable<Env['LUCIKO_DB']>,
+  deviceId: string,
+): Promise<void> {
+  await db
+    .prepare('UPDATE devices SET revoked_at = ? WHERE id = ?')
+    .bind(Date.now(), deviceId)
+    .run();
+}
+
+async function touchDevice(
+  db: NonNullable<Env['LUCIKO_DB']>,
+  deviceId: string,
+): Promise<void> {
+  await db
+    .prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?')
+    .bind(Date.now(), deviceId)
+    .run();
+}
+
+// --- Auth helpers ---
+
+async function requireBearerAuth(
+  request: Request,
+  env: Env,
+): Promise<{ authenticated: true; deviceId: string } | { authenticated: false; response: Response }> {
+  const secret = env.LUCIKO_BASIC_AUTH_PASSWORD;
+  if (!secret) {
+    return { authenticated: false, response: json({ error: 'Server not configured' }, { status: 500 }) };
+  }
+
+  const token = extractBearerToken(request);
+  if (!token) {
+    return { authenticated: false, response: json({ authenticated: false }, { status: 401 }) };
+  }
+
+  const result = await verifyToken(token, secret);
+  if (!result.valid || !result.deviceId) {
+    return { authenticated: false, response: json({ authenticated: false }, { status: 401 }) };
+  }
+
+  // Check device revocation in D1
+  if (env.LUCIKO_DB) {
+    const revoked = await isDeviceRevoked(env.LUCIKO_DB, result.deviceId);
+    if (revoked) {
+      return { authenticated: false, response: json({ authenticated: false }, { status: 401 }) };
+    }
+    // Update last_seen_at (fire-and-forget)
+    void touchDevice(env.LUCIKO_DB, result.deviceId);
+  }
+
+  return { authenticated: true, deviceId: result.deviceId };
 }
 
 const worker = {
@@ -186,36 +206,56 @@ const worker = {
     try {
       const url = new URL(request.url);
 
-      // Logout — clears auth cookie, no auth required
-      if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
-        return clearAuthCookie(json({ ok: true }));
+      // POST /api/auth/login — Basic Auth → Bearer token + device registration
+      if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+        if (!basicAuthValid(request, env)) {
+          return json({ ok: false, error: 'Invalid credentials' }, { status: 401 });
+        }
+
+        const deviceId = crypto.randomUUID();
+        const userAgent = request.headers.get('User-Agent') || 'unknown';
+        const token = await createAuthToken(env.LUCIKO_BASIC_AUTH_PASSWORD!, deviceId);
+
+        if (env.LUCIKO_DB) {
+          try {
+            await registerDevice(env.LUCIKO_DB, deviceId, userAgent);
+          } catch (err) {
+            console.error('Failed to register device:', err);
+          }
+        }
+
+        return json({ ok: true, token, device_id: deviceId });
       }
 
-      // Auth status — returns whether the request is authenticated without triggering browser dialog
+      // GET /api/auth/status — validate Bearer token
       if (url.pathname === '/api/auth/status' && request.method === 'GET') {
-        const statusAuth = await checkAuth(request, env);
-        if (!statusAuth.authenticated) {
-          return json({ authenticated: false }, { status: 401 });
-        }
-        const statusResponse = json({ authenticated: true });
-        if (statusAuth.newToken) {
-          return setAuthCookie(statusResponse, statusAuth.newToken);
-        }
-        return statusResponse;
+        const auth = await requireBearerAuth(request, env);
+        if (!auth.authenticated) return auth.response;
+        return json({ authenticated: true, device_id: auth.deviceId });
       }
 
-      // Auth gate for all other routes
-      const auth = await checkAuth(request, env);
-      if (!auth.authenticated) {
-        return authChallenge();
+      // POST /api/auth/logout — revoke device
+      if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
+        const auth = await requireBearerAuth(request, env);
+        if (!auth.authenticated) return auth.response;
+
+        if (env.LUCIKO_DB) {
+          try {
+            await revokeDevice(env.LUCIKO_DB, auth.deviceId);
+          } catch (err) {
+            console.error('Failed to revoke device:', err);
+          }
+        }
+
+        return json({ ok: true });
       }
 
-      // Attach auth cookie to successful responses when Basic Auth was just used
-      const respond = (res: Response) =>
-        auth.newToken ? setAuthCookie(res, auth.newToken) : res;
-
+      // GET /api/health — requires Bearer auth
       if (url.pathname === '/api/health' && request.method === 'GET') {
-        return respond(json({
+        const auth = await requireBearerAuth(request, env);
+        if (!auth.authenticated) return auth.response;
+
+        return json({
           ok: true,
           service: 'luciko',
           mode: 'worker',
@@ -223,10 +263,11 @@ const worker = {
             d1: Boolean(env.LUCIKO_DB),
             r2: Boolean(env.LUCIKO_BUCKET),
           },
-        }));
+        });
       }
 
-      return respond(await env.ASSETS.fetch(request));
+      // All other routes: serve static assets (no auth gate — SPA handles auth on client)
+      return env.ASSETS.fetch(request);
     } catch (error) {
       console.error('Worker request failed', error);
       return json(

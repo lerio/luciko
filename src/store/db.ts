@@ -411,7 +411,9 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
 
     const getAttachmentKey = (att: NonNullable<Message['attachments']>[number]): string => {
         if (att.contentHash) return `hash:${att.contentHash}`;
-        return `meta:${att.mimeType ?? ''}:${att.size ?? ''}`;
+        const meta = `meta:${att.mimeType ?? ''}:${att.size ?? ''}`;
+        if (meta.length > 6) return meta;
+        return att.id;
     };
 
     for (const { msg, existing: existingMsg } of lookupResults) {
@@ -431,10 +433,7 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
 
             const msgToStore = { ...msg };
             if (msgToStore.attachments) {
-                msgToStore.attachments = msgToStore.attachments.map(att => ({
-                    ...att,
-                    file: undefined
-                }));
+                msgToStore.attachments = msgToStore.attachments.map(({ id, type, fileName, size }) => ({ id, type, fileName, size }));
             }
 
             pendingPuts.push(messageStore.put(msgToStore));
@@ -486,7 +485,7 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
 
                         if (!existingAtt) {
                             pendingPuts.push(attachmentStore.put(newAtt.file, newAtt.id));
-                            updatedAttachments.push({ ...newAtt, file: undefined });
+                            updatedAttachments.push({ id: newAtt.id, type: newAtt.type, fileName: newAtt.fileName, size: newAtt.size });
                             wasUpdated = true;
                             existingByKey.set(key, newAtt);
                         } else {
@@ -623,7 +622,7 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
 
             const postToStore: PostRecord = { ...post };
             if (postToStore.media) {
-                postToStore.media = postToStore.media.map((media) => ({ ...media, file: undefined }));
+                postToStore.media = postToStore.media.map(({ id, type, fileName }) => ({ id, type, fileName }));
             }
             pendingPuts.push(postStore.put(postToStore));
             insertedCount++;
@@ -641,7 +640,7 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
                         if (media.file) {
                             pendingPuts.push(attachmentStore.put(media.file, media.id));
                         }
-                        updatedMedia.push({ ...media, file: undefined });
+                        updatedMedia.push({ id: media.id, type: media.type, fileName: media.fileName });
                         wasUpdated = true;
                     } else if (media.file) {
                         const storedBlob = await attachmentStore.get(current.id);

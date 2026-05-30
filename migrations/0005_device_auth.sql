@@ -1,0 +1,6 @@
+-- Migration 0005: Device-based auth
+-- The devices table (created in 0001_initial.sql) is now active.
+-- Device records are created on first login and revoked on logout.
+-- The public_key column is reserved for future use (stored as empty string).
+-- No schema changes are needed; the existing table already supports
+-- the token-based auth flow with id, name, created_at, last_seen_at, revoked_at.
