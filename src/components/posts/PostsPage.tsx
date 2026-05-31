@@ -13,6 +13,7 @@ import {
   setBookmark,
   setHiddenItem,
 } from "../../store/db";
+import { markLocalChanged } from "../../store/archiveSync";
 import type { PostRecord } from "../../types/posts";
 import { normalizeMojibakeText } from "../../utils/text";
 
@@ -225,6 +226,7 @@ export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProp
     const persist = async () => {
       try {
         await setBookmark("posts", bookmarkedPostId);
+        markLocalChanged();
       } catch (err) {
         console.warn("Failed to persist posts bookmark:", err);
       }

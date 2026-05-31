@@ -5,6 +5,7 @@ import { validateMessage } from '../types/chat';
 import type { PostRecord, PostMedia } from '../types/posts';
 import { validatePostRecord } from '../types/posts';
 import { normalizeMojibakeText } from '../utils/text';
+import { getAuthHeaders } from './auth';
 
 interface LucikoDB extends DBSchema {
     messages: {
@@ -100,9 +101,33 @@ export function initDB() {
     return dbPromise;
 }
 
-export async function getAttachment(id: string): Promise<Blob | undefined> {
+export async function getAttachmentLocal(id: string): Promise<Blob | undefined> {
     const db = await initDB();
     return db.get('attachments', id);
+}
+
+export async function getAttachment(id: string): Promise<Blob | undefined> {
+    const local = await getAttachmentLocal(id);
+    if (local) return local;
+
+    // Not in local IndexedDB — try fetching from remote R2
+    try {
+        const headers = getAuthHeaders();
+        if (!headers.Authorization) return undefined;
+
+        const resp = await fetch(`/api/attachments/${encodeURIComponent(id)}`, { headers });
+        if (!resp.ok) return undefined;
+
+        const blob = await resp.blob();
+        // Store locally for next time
+        const db = await initDB();
+        try {
+            await db.put('attachments', blob, id);
+        } catch { /* best-effort cache */ }
+        return blob;
+    } catch {
+        return undefined;
+    }
 }
 
 export async function getBookmark(chatId: string): Promise<string | null> {
@@ -151,6 +176,23 @@ export async function setBookmark(chatId: string, messageId: string | null): Pro
 export async function getMessagesCount(chatId: string): Promise<number> {
     const db = await initDB();
     return db.countFromIndex('messages', 'chatId', chatId);
+}
+
+export async function getTotalMessagesCount(): Promise<number> {
+    const db = await initDB();
+    return db.count('messages');
+}
+
+export async function countMessagesWithChatId(chatId: string): Promise<number> {
+    const db = await initDB();
+    const tx = db.transaction('messages', 'readonly');
+    let count = 0;
+    let cursor = await tx.store.openCursor();
+    while (cursor) {
+        if (cursor.value.chatId === chatId) count++;
+        cursor = await cursor.continue();
+    }
+    return count;
 }
 
 export async function getPosts(): Promise<PostRecord[]> {
@@ -405,13 +447,27 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
     const externalIdIndex = messageStore.index('externalId');
 
     // Phase 1: Batch all externalId lookups in parallel
+    let lookedUpByExtId = 0;
+    let lookedUpById = 0;
+    let foundByExtId = 0;
+    let foundById = 0;
     const lookupResults = await Promise.all(
         normalizedMessages.map(async (msg) => {
-            if (!msg.externalId) return { msg, existing: undefined };
+            if (!msg.externalId) {
+                lookedUpById++;
+                const existing = await messageStore.get(msg.id);
+                if (existing) foundById++;
+                return { msg, existing };
+            }
+            lookedUpByExtId++;
             const existing = await externalIdIndex.get(msg.externalId);
+            if (existing) foundByExtId++;
             return { msg, existing };
         })
     );
+    if (lookedUpByExtId + lookedUpById > 0) {
+        console.log('[importMessages] Lookups: byExtId', lookedUpByExtId, 'found', foundByExtId, '| byId', lookedUpById, 'found', foundById, '| total msgs in batch', normalizedMessages.length);
+    }
 
     const pendingPuts: Promise<unknown>[] = [];
 
@@ -423,8 +479,8 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
     };
 
     for (const { msg, existing: existingMsg } of lookupResults) {
-        if (!msg.externalId) {
-            // New message (no externalId)
+        if (!msg.externalId && !existingMsg) {
+            // Truly new message: no externalId and id not found locally
             pendingPuts.push(messageStore.put(msg));
             insertedCount++;
             insertedIds.push(msg.id);
@@ -466,17 +522,24 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
                 wasUpdated = true;
             }
 
-            // Merge incoming field changes (content, sender, quoted) regardless of attachments
+            // Merge incoming field changes (content, sender, quoted, chatId) regardless of attachments
             if (
                 msg.senderId !== existing.senderId ||
                 msg.content !== existing.content ||
                 msg.quotedText !== existing.quotedText ||
-                msg.quotedSender !== existing.quotedSender
+                msg.quotedSender !== existing.quotedSender ||
+                msg.chatId !== existing.chatId
             ) {
+                if (msg.chatId !== existing.chatId) {
+                    console.log('[importMessages] chatId drift fix:', existing.id, 'existing.chatId:', existing.chatId, '→ msg.chatId:', msg.chatId);
+                }
                 existing.senderId = msg.senderId;
                 existing.content = msg.content;
                 existing.quotedText = msg.quotedText;
                 existing.quotedSender = msg.quotedSender;
+                if (msg.chatId !== undefined) {
+                    existing.chatId = msg.chatId;
+                }
                 wasUpdated = true;
             }
 

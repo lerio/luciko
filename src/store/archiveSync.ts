@@ -1,5 +1,5 @@
 import { getAuthHeaders } from './auth';
-import { importMessages, importPosts, getMessagesCount, getMessagesPaginated, getPosts, getPostsCount } from './db';
+import { importMessages, importPosts, getMessagesCount, getTotalMessagesCount, countMessagesWithChatId, getMessagesPaginated, getPosts, getPostsCount, getAllBookmarks, importBookmarks, getAttachmentLocal } from './db';
 import { TARGET_CHAT_ID } from '../constants/chat';
 
 const LAST_PULL_KEY = 'luciko_last_pull_at';
@@ -260,6 +260,64 @@ function stripBlobs(item: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * Upload attachment blobs to R2 before they're stripped from the sync payload.
+ * Iterates through items, finds attachments with blob data in local IndexedDB,
+ * and uploads them to the server so other devices can fetch them.
+ */
+async function uploadAttachmentsToR2(items: Array<{ [key: string]: unknown }>): Promise<void> {
+    const authHeaders = getAuthHeaders();
+    if (!authHeaders.Authorization) return;
+
+    // Collect all unique attachment IDs that need uploading
+    const seen = new Set<string>();
+    const uploads: Array<{ id: string; blob: Blob }> = [];
+
+    for (const item of items) {
+        // Handle both message attachments and post media
+        const attList = (item.attachments || item.media) as Array<Record<string, unknown>> | undefined;
+        if (!attList?.length) continue;
+
+        for (const att of attList) {
+            const attId = att.id as string;
+            if (!attId || seen.has(attId)) continue;
+            seen.add(attId);
+
+            // The blob is in the separate 'attachments' IndexedDB store,
+            // not on the item object itself. Use local-only lookup to
+            // avoid a server round-trip when the blob isn't cached yet.
+            try {
+                const blob = await getAttachmentLocal(attId);
+                if (blob) {
+                    uploads.push({ id: attId, blob });
+                }
+            } catch { /* skip if not found */ }
+        }
+    }
+
+    // Upload blobs to R2 in parallel
+    if (uploads.length > 0) {
+        console.log('[uploadAttachmentsToR2] Uploading', uploads.length, 'attachments');
+        await Promise.all(uploads.map(async ({ id, blob }) => {
+            try {
+                const resp = await fetch(`/api/attachments/${encodeURIComponent(id)}`, {
+                    method: 'PUT',
+                    headers: {
+                        ...authHeaders,
+                        'Content-Type': blob.type || 'application/octet-stream',
+                    },
+                    body: blob,
+                });
+                if (!resp.ok) {
+                    console.warn('[uploadAttachmentsToR2] Failed to upload', id, resp.status);
+                }
+            } catch (err) {
+                console.warn('[uploadAttachmentsToR2] Error uploading', id, err);
+            }
+        }));
+    }
+}
+
+/**
  * Main sync orchestrator: given items that were just inserted locally,
  * run Pass 2 remote dedup and upload remaining items in chunks.
  *
@@ -333,6 +391,10 @@ export async function syncNewItems(
 
             const chunk = itemsToUpload.slice(i, i + CHUNK_SIZE);
             const chunkIndex = Math.floor(i / CHUNK_SIZE);
+
+            // Upload attachment blobs to R2 before stripping them from the payload
+            await uploadAttachmentsToR2(chunk);
+
             const cleanItems = chunk.map(item => stripBlobs(item as Record<string, unknown>));
 
             const result = await uploadChunk(entity, chunkIndex, currentSyncState.totalChunks, cleanItems, generation);
@@ -514,6 +576,8 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         // Self-healing drift check: if a previous pull was incomplete (e.g. due to
         // the old pagination bug), the cursor may be past items that never made it
         // to the local store. Compare remote counts and reset if remote has more.
+        let remoteMsgCount = 0;
+        let remotePostCount = 0;
         if (lastPullAt > 0) {
             try {
                 const authHeaders = getAuthHeaders();
@@ -524,8 +588,10 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
                         const contentType = resp.headers.get('Content-Type') || '';
                         if (!contentType.includes('text/html')) {
                             const counts = await resp.json() as { ok: boolean; messages: number; posts: number };
+                            remoteMsgCount = counts.messages;
+                            remotePostCount = counts.posts;
                             if (counts.ok && (counts.messages > localMsgCount || counts.posts > localPostCount)) {
-                                console.log('[pullNewItems] Drift detected — remote has more items than local, resetting pull cursor');
+                                console.log('[pullNewItems] Drift detected — remote:', counts.messages, 'local:', localMsgCount, '(msg) remote:', counts.posts, 'local:', localPostCount, '(posts) — resetting pull cursor');
                                 setLastPullAt(0);
                                 lastPullAt = 0;
                             }
@@ -543,7 +609,8 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         notifyPullListeners();
 
         let totalInserted = 0;
-        let totalPulled = 0;
+        let totalPulledMsgs = 0;
+        let totalPulledPosts = 0;
 
         // ── Pull messages ──
         let since = lastPullAt;
@@ -573,9 +640,16 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
                     if (typeof extId === 'string' && extId) pulledMsgExternalIds.add(extId);
                 }
                 const stats = await importMessages(normalizedItems as unknown as Parameters<typeof importMessages>[0]);
+                if (stats.inserted !== batch.items.length) {
+                    console.log('[pullNewItems] Batch import: returned', batch.items.length, 'inserted', stats.inserted, 'updated', stats.updated);
+                    if (stats.insertedIds && stats.insertedIds.length > 0) {
+                        console.log('[pullNewItems] Inserted IDs:', stats.insertedIds.slice(0, 10), '... count:', stats.insertedIds.length);
+                        console.log('[pullNewItems] Inserted externalIds:', stats.insertedExternalIds?.slice(0, 10));
+                    }
+                }
                 totalInserted += stats.inserted;
-                totalPulled += batch.items.length;
-                currentPullState.pulledItems = totalPulled;
+                totalPulledMsgs += batch.items.length;
+                currentPullState.pulledItems = totalPulledMsgs + totalPulledPosts;
                 currentPullState.insertedLocal = totalInserted;
                 notifyPullListeners();
             }
@@ -612,8 +686,8 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
                 }
                 const stats = await importPosts(normalizedItems as unknown as Parameters<typeof importPosts>[0]);
                 totalInserted += stats.inserted;
-                totalPulled += batch.items.length;
-                currentPullState.pulledItems = totalPulled;
+                totalPulledPosts += batch.items.length;
+                currentPullState.pulledItems = totalPulledMsgs + totalPulledPosts;
                 currentPullState.insertedLocal = totalInserted;
                 notifyPullListeners();
             }
@@ -625,6 +699,20 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
 
         // Record this pull's cutoff so next pull only gets newer items
         setLastPullAt(pullCutoff);
+
+        // Diagnostic: compare what we pulled vs what's now local vs what remote had
+        const [postPullMsgCount, postPullPostCount, totalMsgCount, manualC1Count] = await Promise.all([
+            getMessagesCount(TARGET_CHAT_ID),
+            getPostsCount(),
+            getTotalMessagesCount(),
+            countMessagesWithChatId(TARGET_CHAT_ID),
+        ]);
+        console.log('[pullNewItems] Pull complete. Pulled msgs:', totalPulledMsgs, 'posts:', totalPulledPosts,
+            '| Local msgs before:', localMsgCount, 'after:', postPullMsgCount,
+            '| Local posts before:', localPostCount, 'after:', postPullPostCount,
+            '| Remote msgs:', remoteMsgCount, 'posts:', remotePostCount,
+            '| Msg drift after pull:', remoteMsgCount - postPullMsgCount,
+            '| Total msgs in store:', totalMsgCount, 'manual c1 count:', manualC1Count);
 
         currentPullState.phase = 'done';
         notifyPullListeners();
@@ -651,6 +739,89 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
 }
 
 /**
+ * Sync bookmarks bidirectionally: pull from server, merge with local, then push.
+ * Bookmarks are a small dataset (one row per chat) — full-set replacement on both sides.
+ */
+async function syncBookmarks(): Promise<void> {
+  try {
+    const authHeaders = getAuthHeaders();
+    if (!authHeaders.Authorization) {
+      console.log('[syncBookmarks] Not authenticated, skipping');
+      return;
+    }
+
+    // ── 1. Pull bookmarks from server ──
+    // Always use since=0 — bookmarks are a tiny dataset (one row per chat),
+    // and using the shared lastPullAt would race with pullNewItems() which
+    // updates it before we run, causing us to miss bookmarks uploaded earlier.
+    let pulledBookmarks: Array<{ chatId: string; messageId: string }> = [];
+    try {
+      const url = '/api/sync/bookmarks/pull?since=0';
+      const resp = await fetch(url, { headers: authHeaders });
+
+      if (resp.ok) {
+        const contentType = resp.headers.get('Content-Type') || '';
+        if (!contentType.includes('text/html')) {
+          const data = await resp.json() as { ok: boolean; bookmarks: Array<{ chatId: string; messageId: string }> };
+          if (data.ok && data.bookmarks.length > 0) {
+            pulledBookmarks = data.bookmarks;
+            console.log('[syncBookmarks] Pulled', pulledBookmarks.length, 'bookmarks from server');
+
+            // Merge server bookmarks with local: union of both sets.
+            // Server bookmarks take precedence if both have the same chatId.
+            const localBookmarks = await getAllBookmarks();
+            const merged = new Map<string, string>();
+            for (const bm of localBookmarks) {
+              merged.set(bm.chatId, bm.messageId);
+            }
+            for (const bm of pulledBookmarks) {
+              merged.set(bm.chatId, bm.messageId);
+            }
+            const mergedList = Array.from(merged.entries()).map(([chatId, messageId]) => ({ chatId, messageId }));
+            await importBookmarks(mergedList);
+            console.log('[syncBookmarks] Merged', mergedList.length, 'bookmarks locally');
+          }
+        }
+      } else {
+        console.warn('[syncBookmarks] Pull failed:', resp.status);
+      }
+    } catch (err) {
+      console.warn('[syncBookmarks] Pull error:', err);
+    }
+
+    // ── 2. Push local bookmarks to server ──
+    // Always push — bookmarks are tiny (one record per chat). No gating needed;
+    // re-uploading the same set is a harmless no-op on the server.
+    try {
+      const localBookmarks = await getAllBookmarks();
+      const headers: Record<string, string> = {
+        ...authHeaders,
+        'Content-Type': 'application/json',
+      };
+
+      const resp = await fetch('/api/sync/bookmarks/upload', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ bookmarks: localBookmarks }),
+      });
+
+      if (!resp.ok) {
+        console.warn('[syncBookmarks] Upload failed:', resp.status);
+      } else {
+        const data = await resp.json() as { ok: boolean; count: number };
+        if (data.ok) {
+          console.log('[syncBookmarks] Uploaded', data.count, 'bookmarks to server');
+        }
+      }
+    } catch (err) {
+      console.warn('[syncBookmarks] Upload error:', err);
+    }
+  } catch (err) {
+    console.error('[syncBookmarks] Unexpected error:', err);
+  }
+}
+
+/**
  * Bidirectional sync: push local items to remote, then pull new remote items.
  * Called at app load to reconcile local IndexedDB with remote D1.
  *
@@ -671,6 +842,14 @@ export async function syncAll(): Promise<void> {
         pulledPostIds = result.pulledPostExternalIds;
     } catch (err) {
         console.error('[syncAll] Pull failed:', err);
+    }
+
+    // ── 1b. Sync bookmarks ──
+    try {
+      console.log('[syncAll] Syncing bookmarks');
+      await syncBookmarks();
+    } catch (err) {
+      console.error('[syncAll] Bookmark sync failed:', err);
     }
 
     // ── 2. Push local → remote (only if local data changed since last push) ──

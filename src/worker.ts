@@ -14,7 +14,10 @@ type Env = {
     };
     exec: (sql: string) => Promise<unknown>;
   };
-  LUCIKO_BUCKET?: unknown;
+  LUCIKO_BUCKET?: {
+    get: (key: string) => Promise<{ body: ReadableStream<Uint8Array> | null; size: number; httpMetadata?: Record<string, string> } | null>;
+    put: (key: string, value: ArrayBuffer | Uint8Array | ReadableStream, options?: { httpMetadata?: Record<string, string> }) => Promise<unknown>;
+  };
 };
 
 const BASIC_AUTH_USER = 'luciko';
@@ -401,37 +404,88 @@ const worker = {
 
           if (entity === 'messages') {
             if (sinceId) {
-              query = `SELECT payload, updated_at, id FROM ${table} WHERE chat_id = ? AND (updated_at > ? OR (updated_at = ? AND id > ?)) ORDER BY updated_at ASC, id ASC LIMIT ?`;
+              query = `SELECT id, chat_id, timestamp, payload, updated_at FROM ${table} WHERE chat_id = ? AND (updated_at > ? OR (updated_at = ? AND id > ?)) ORDER BY updated_at ASC, id ASC LIMIT ?`;
               bindValues = [chatId, since, since, sinceId, limit + 1];
             } else {
-              query = `SELECT payload, updated_at, id FROM ${table} WHERE chat_id = ? AND updated_at >= ? ORDER BY updated_at ASC, id ASC LIMIT ?`;
+              query = `SELECT id, chat_id, timestamp, payload, updated_at FROM ${table} WHERE chat_id = ? AND updated_at >= ? ORDER BY updated_at ASC, id ASC LIMIT ?`;
               bindValues = [chatId, since, limit + 1];
             }
           } else {
             if (sinceId) {
-              query = `SELECT payload, updated_at, id FROM ${table} WHERE (updated_at > ? OR (updated_at = ? AND id > ?)) ORDER BY updated_at ASC, id ASC LIMIT ?`;
+              query = `SELECT id, timestamp, payload, updated_at FROM ${table} WHERE (updated_at > ? OR (updated_at = ? AND id > ?)) ORDER BY updated_at ASC, id ASC LIMIT ?`;
               bindValues = [since, since, sinceId, limit + 1];
             } else {
-              query = `SELECT payload, updated_at, id FROM ${table} WHERE updated_at >= ? ORDER BY updated_at ASC, id ASC LIMIT ?`;
+              query = `SELECT id, timestamp, payload, updated_at FROM ${table} WHERE updated_at >= ? ORDER BY updated_at ASC, id ASC LIMIT ?`;
               bindValues = [since, limit + 1];
             }
           }
 
-          const result = await db.prepare(query).bind(...bindValues).all<{ payload: string; updated_at: number; id: string }>();
+          const result = await db.prepare(query).bind(...bindValues).all<{
+            id: string;
+            chat_id?: string;
+            timestamp: number;
+            payload: string;
+            updated_at: number;
+          }>();
 
           const rows = result.results;
           const hasMore = rows.length > limit;
-          const items = rows.slice(0, limit).map(r => {
-            try {
-              return JSON.parse(r.payload) as Record<string, unknown>;
-            } catch {
-              return null;
-            }
-          }).filter(Boolean);
 
-          const lastRow = rows.length > 0 ? rows[Math.min(items.length, rows.length) - 1] : null;
-          const nextSince = lastRow ? lastRow.updated_at : since;
-          const nextSinceId = lastRow ? lastRow.id : sinceId;
+          // Parse payloads up to `limit` items. The column values are
+          // authoritative for id, chat_id, and timestamp — they reflect
+          // what was actually stored, not what the payload claims.
+          // This ensures chatId matches the query filter and prevents
+          // drift when a payload has a different chatId than the column.
+          const items: Array<Record<string, unknown>> = [];
+          let lastReturnedRow: { updated_at: number; id: string } | null = null;
+          for (let i = 0; i < rows.length && items.length < limit; i++) {
+            const r = rows[i];
+            try {
+              const parsed = JSON.parse(r.payload);
+              if (parsed && typeof parsed === 'object') {
+                // Use column values as authoritative for key fields
+                parsed.id = r.id;
+                parsed.timestamp = r.timestamp;
+                if (entity === 'messages' && r.chat_id) {
+                  const payloadChatId = (parsed as Record<string, unknown>).chatId;
+                  if (payloadChatId !== r.chat_id) {
+                    console.log('[pull] chatId mismatch for', r.id, '— payload:', payloadChatId, '→ column:', r.chat_id);
+                  }
+                  (parsed as Record<string, unknown>).chatId = r.chat_id;
+                }
+                items.push(parsed as Record<string, unknown>);
+                lastReturnedRow = r;
+              }
+            } catch (err) {
+              console.error('[pull] Corrupt payload for id:', r.id, '— using column fallback. Error:', String(err));
+              if (entity === 'messages') {
+                items.push({
+                  id: r.id,
+                  chatId: r.chat_id ?? chatId,
+                  timestamp: r.timestamp,
+                  senderId: 'unknown',
+                  content: '(corrupted — content lost)',
+                });
+              } else {
+                items.push({
+                  id: r.id,
+                  timestamp: r.timestamp,
+                  source: 'posts',
+                  text: '(corrupted — content lost)',
+                });
+              }
+              lastReturnedRow = r;
+            }
+          }
+
+          // If all items in this batch were malformed, advance the cursor past
+          // the last row anyway to avoid re-fetching the same broken rows forever.
+          if (!lastReturnedRow && rows.length > 0) {
+            lastReturnedRow = rows[rows.length - 1];
+          }
+
+          const nextSince = lastReturnedRow ? lastReturnedRow.updated_at : since;
+          const nextSinceId = lastReturnedRow ? lastReturnedRow.id : sinceId;
 
           return json({ ok: true, items, hasMore, nextSince, nextSinceId });
         } catch (err) {
@@ -473,6 +527,128 @@ const worker = {
           console.error('[counts] Query failed:', err);
           return json(
             { ok: false, error: err instanceof Error ? err.message : 'Count query failed' },
+            { status: 500 },
+          );
+        }
+      }
+
+      // POST /api/sync/bookmarks/upload — Upload bookmarks to D1
+      if (url.pathname === '/api/sync/bookmarks/upload' && request.method === 'POST') {
+        const auth = await requireBearerAuth(request, env);
+        if (!auth.authenticated) return auth.response;
+        if (!env.LUCIKO_DB) return json({ ok: false, error: 'D1 not available' }, { status: 503 });
+
+        try {
+          const body = await request.json() as { bookmarks: Array<{ chatId: string; messageId: string }> };
+          if (!Array.isArray(body.bookmarks)) {
+            return json({ ok: false, error: 'Invalid request: bookmarks must be an array' }, { status: 400 });
+          }
+
+          const db = env.LUCIKO_DB;
+          const now = Date.now();
+
+          // Replace all bookmarks: delete existing, insert new set
+          await db.exec('DELETE FROM archive_bookmarks');
+
+          let count = 0;
+          for (const bm of body.bookmarks) {
+            if (!bm.chatId || !bm.messageId) continue;
+            await db.prepare(
+              'INSERT INTO archive_bookmarks (chat_id, message_id, updated_at) VALUES (?, ?, ?)'
+            ).bind(bm.chatId, bm.messageId, now).run();
+            count++;
+          }
+
+          return json({ ok: true, count });
+        } catch (err) {
+          console.error('[bookmarks/upload] Upload failed:', err);
+          return json(
+            { ok: false, error: err instanceof Error ? err.message : 'Bookmark upload failed' },
+            { status: 500 },
+          );
+        }
+      }
+
+      // GET /api/sync/bookmarks/pull — Download bookmarks from D1
+      if (url.pathname === '/api/sync/bookmarks/pull' && request.method === 'GET') {
+        const auth = await requireBearerAuth(request, env);
+        if (!auth.authenticated) return auth.response;
+        if (!env.LUCIKO_DB) return json({ ok: false, error: 'D1 not available' }, { status: 503 });
+
+        try {
+          const since = parseInt(url.searchParams.get('since') || '0', 10) || 0;
+          const db = env.LUCIKO_DB;
+
+          const result = await db.prepare(
+            'SELECT chat_id, message_id, updated_at FROM archive_bookmarks WHERE updated_at >= ?'
+          ).bind(since).all<{ chat_id: string; message_id: string; updated_at: number }>();
+
+          const bookmarks = result.results.map(r => ({
+            chatId: r.chat_id,
+            messageId: r.message_id,
+            updatedAt: r.updated_at,
+          }));
+
+          return json({ ok: true, bookmarks });
+        } catch (err) {
+          console.error('[bookmarks/pull] Pull failed:', err);
+          return json(
+            { ok: false, error: err instanceof Error ? err.message : 'Bookmark pull failed' },
+            { status: 500 },
+          );
+        }
+      }
+
+      // PUT /api/attachments/<id> — Upload attachment blob to R2
+      if (url.pathname.startsWith('/api/attachments/') && request.method === 'PUT') {
+        const auth = await requireBearerAuth(request, env);
+        if (!auth.authenticated) return auth.response;
+        if (!env.LUCIKO_BUCKET) return json({ ok: false, error: 'R2 not available' }, { status: 503 });
+
+        try {
+          const attachmentId = url.pathname.slice('/api/attachments/'.length);
+          if (!attachmentId) return json({ ok: false, error: 'Missing attachment id' }, { status: 400 });
+
+          const contentType = request.headers.get('Content-Type') || 'application/octet-stream';
+          const body = await request.arrayBuffer();
+
+          await env.LUCIKO_BUCKET.put(attachmentId, body, {
+            httpMetadata: { contentType },
+          });
+
+          return json({ ok: true });
+        } catch (err) {
+          console.error('[attachments] Upload failed:', err);
+          return json(
+            { ok: false, error: err instanceof Error ? err.message : 'Attachment upload failed' },
+            { status: 500 },
+          );
+        }
+      }
+
+      // GET /api/attachments/<id> — Download attachment blob from R2
+      if (url.pathname.startsWith('/api/attachments/') && request.method === 'GET') {
+        const auth = await requireBearerAuth(request, env);
+        if (!auth.authenticated) return auth.response;
+        if (!env.LUCIKO_BUCKET) return json({ ok: false, error: 'R2 not available' }, { status: 503 });
+
+        try {
+          const attachmentId = url.pathname.slice('/api/attachments/'.length);
+          if (!attachmentId) return json({ ok: false, error: 'Missing attachment id' }, { status: 400 });
+
+          const object = await env.LUCIKO_BUCKET.get(attachmentId);
+          if (!object) return json({ ok: false, error: 'Attachment not found' }, { status: 404 });
+
+          const headers = new Headers();
+          headers.set('Content-Type', object.httpMetadata?.contentType || 'application/octet-stream');
+          headers.set('Content-Length', String(object.size));
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+
+          return new Response(object.body, { headers });
+        } catch (err) {
+          console.error('[attachments] Download failed:', err);
+          return json(
+            { ok: false, error: err instanceof Error ? err.message : 'Attachment download failed' },
             { status: 500 },
           );
         }

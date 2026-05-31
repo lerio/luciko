@@ -3,6 +3,7 @@ import type { Chat, Message } from "../../types/chat";
 import { MessageList } from "../chat/MessageList";
 import { Bookmark } from "lucide-react";
 import { getBookmark, setBookmark } from "../../store/db";
+import { markLocalChanged } from "../../store/archiveSync";
 import styles from "./ChatArea.module.css";
 import { format } from "date-fns";
 import messageListStyles from "../chat/MessageList.module.css";
@@ -172,6 +173,7 @@ export function ChatArea({
     const persist = async () => {
       try {
         await setBookmark(activeChat.id, bookmarkedMessageId);
+        markLocalChanged();
       } catch (error) {
         console.warn("Failed to persist bookmark to storage:", error);
       }
