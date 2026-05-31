@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { ChangeEvent } from 'react';
-import { Upload, CheckCircle, AlertCircle } from 'lucide-react';
+import { Upload, CheckCircle, AlertCircle, Cloud, CloudOff } from 'lucide-react';
 import JSZip from 'jszip';
 import { parseWhatsAppZip } from '../../importers/whatsapp/parser';
 import { parseFacebookZip, parseInstagramZip } from '../../importers/facebook/parser';
@@ -9,7 +9,9 @@ import { parseGoogleChatZip } from '../../importers/googlechat/parser';
 import { parseOldGoogleChatCsv } from '../../importers/googlechat/oldCsv';
 import { parseIMessageJson } from '../../importers/imessage/parser';
 import { parseGmailZip } from '../../importers/gmail/parser';
-import { importMessages, importPosts } from '../../store/db';
+import { importMessages, importPosts, type ImportStats } from '../../store/db';
+import { syncNewItems, onSyncProgress, getSyncProgress, markLocalChanged, type SyncProgress } from '../../store/archiveSync';
+import { StorageInfo } from './StorageInfo';
 import { TARGET_CHAT_ID } from '../../constants/chat';
 import styles from './ImportPage.module.css';
 
@@ -112,7 +114,13 @@ export function ImportPage() {
     });
     const [errorMessage, setErrorMessage] = useState<string>('');
     const [logs, setLogs] = useState<string[]>([]);
+    const [syncProgress, setSyncProgress] = useState<SyncProgress>(() => getSyncProgress());
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Subscribe to sync progress — initial state is already set via useState initializer
+    useEffect(() => {
+        return onSyncProgress(setSyncProgress);
+    }, []);
 
     const setDragging = (value: boolean) => (e: React.DragEvent) => {
         e.preventDefault();
@@ -175,7 +183,7 @@ export function ImportPage() {
             }
             const { handler, zip } = detected;
             const result = await handler.parse(file, TARGET_CHAT_ID, zip);
-            let importStats = { inserted: 0, updated: 0 };
+            let importStats: ImportStats = { inserted: 0, updated: 0 };
             const totalCount = isPostsResult(result)
                 ? result.posts.length
                 : result.messages.length;
@@ -194,6 +202,27 @@ export function ImportPage() {
             });
             setLogs(combinedLogs);
             setImportStatus('success');
+            markLocalChanged();
+
+            // Start remote sync in background (fire-and-forget)
+            console.log('[ImportPage] importStats:', { inserted: importStats.inserted, updated: importStats.updated, insertedIdsLen: importStats.insertedIds?.length });
+            if (importStats.inserted > 0 && importStats.insertedIds && importStats.insertedIds.length > 0) {
+                const isPosts = isPostsResult(result);
+                const allItems: Array<{ id: string; externalId?: string; [key: string]: unknown }> =
+                    isPosts
+                        ? result.posts as unknown as Array<{ id: string; externalId?: string; [key: string]: unknown }>
+                        : result.messages as unknown as Array<{ id: string; externalId?: string; [key: string]: unknown }>;
+
+                const insertedIdSet = new Set(importStats.insertedIds);
+                const insertedItems = allItems.filter(item => insertedIdSet.has(item.id));
+
+                console.log('[ImportPage] Starting sync:', { entity: isPosts ? 'posts' : 'messages', insertedItems: insertedItems.length });
+                if (insertedItems.length > 0) {
+                    void syncNewItems(isPosts ? 'posts' : 'messages', insertedItems);
+                }
+            } else {
+                console.log('[ImportPage] Sync skipped — no inserted items');
+            }
 
         } catch (error: unknown) {
             console.error('Import failed:', error);
@@ -263,14 +292,92 @@ export function ImportPage() {
                 </div>
             )}
 
-            <div className={styles.instructions}>
-                <h3 style={{ marginBottom: '10px' }}>Instructions</h3>
-                <ul className={styles.instructionsList}>
-                    <li>Download your export ZIP from the service.</li>
-                    <li>Keep the media files included if available.</li>
-                    <li>Upload the ZIP file here.</li>
-                </ul>
+            {/* Debug: always show sync state */}
+            <div style={{ marginTop: '10px', fontSize: '11px', color: '#999', textAlign: 'center' }}>
+                [sync: {syncProgress.phase} | items: {syncProgress.totalItems} | chunks: {syncProgress.uploadedChunks}/{syncProgress.totalChunks}]
             </div>
+
+            {/* Sync progress — visible during background upload */}
+            {syncProgress.phase !== 'idle' && (
+                <div className={`${styles.syncStatus} ${syncProgress.phase === 'done' ? styles.syncDone : syncProgress.phase === 'error' || syncProgress.phase === 'skipped_offline' ? styles.syncWarning : ''}`}>
+                    {syncProgress.phase === 'checking' && (
+                        <div className={styles.syncContent}>
+                            <Cloud size={20} className={styles.syncIcon} />
+                            <div>
+                                <h3 className={styles.syncTitle}>Checking cloud storage...</h3>
+                                <p className={styles.syncDetail}>
+                                    Verifying {syncProgress.totalItems} items against remote database
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {syncProgress.phase === 'uploading' && (
+                        <div className={styles.syncContent}>
+                            <Cloud size={20} className={styles.syncIcon} />
+                            <div className={styles.syncBody}>
+                                <h3 className={styles.syncTitle}>Uploading to cloud...</h3>
+                                <p className={styles.syncDetail}>
+                                    Chunk {syncProgress.uploadedChunks} of {syncProgress.totalChunks}
+                                    {syncProgress.insertedRemote > 0 && ` (${syncProgress.insertedRemote} items uploaded)`}
+                                </p>
+                                {syncProgress.totalChunks > 0 && (
+                                    <div className={styles.progressBar}>
+                                        <div
+                                            className={styles.progressFill}
+                                            style={{
+                                                width: `${(syncProgress.uploadedChunks / syncProgress.totalChunks) * 100}%`
+                                            }}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {syncProgress.phase === 'done' && (
+                        <div className={styles.syncContent}>
+                            <CheckCircle size={20} color="var(--color-primary)" className={styles.syncIcon} />
+                            <div>
+                                <h3 className={styles.syncTitle}>Cloud Sync Complete</h3>
+                                <p className={styles.syncDetail}>
+                                    Uploaded {syncProgress.insertedRemote} items to cloud storage
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {syncProgress.phase === 'skipped_offline' && (
+                        <div className={styles.syncContent}>
+                            <CloudOff size={20} color="#856404" className={styles.syncIcon} />
+                            <div>
+                                <h3 className={styles.syncTitle} style={{ color: '#856404' }}>Cloud Sync Skipped</h3>
+                                <p className={styles.syncDetail}>
+                                    Cloud storage is not available. Your data is saved locally.
+                                </p>
+                                <p className={styles.syncHint}>
+                                    Items will be synced automatically when the server becomes available.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {syncProgress.phase === 'error' && (
+                        <div className={styles.syncContent}>
+                            <AlertCircle size={20} color="#d32f2f" className={styles.syncIcon} />
+                            <div>
+                                <h3 className={styles.syncTitle} style={{ color: '#d32f2f' }}>Cloud Sync Failed</h3>
+                                <p className={styles.syncDetail}>{syncProgress.error || 'Unknown error'}</p>
+                                <p className={styles.syncHint}>
+                                    Your data is saved locally. You can retry by importing again.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            <StorageInfo />
 
             {logs.length > 0 && (
                 <div className={styles.logsWrapper}>

@@ -1,14 +1,15 @@
-import { useState, useEffect, useCallback, useReducer } from 'react';
+import { useState, useEffect, useCallback, useReducer, useRef } from 'react';
 import type { Message } from '../../types/chat';
 import { ChatArea } from './ChatArea';
 import { ImportPage } from '../import/ImportPage';
 import { PostsPage } from '../posts/PostsPage';
 import { getMessageOffsetInChat, getMessagesPaginated, getMessagesCount } from '../../store/db';
-import { Upload, MessageSquare, Search, LogOut, Cloud, CloudOff } from 'lucide-react';
+import { Upload, MessageSquare, Search, LogOut, Cloud, CloudOff, RefreshCw } from 'lucide-react';
 import styles from './AppLayout.module.css';
 import { TARGET_CHAT } from '../../constants/chat';
 import { SearchPage } from '../search/SearchPage';
 import { useAuth, getAuthHeaders } from '../../contexts/AuthContext';
+import { syncAll } from '../../store/archiveSync';
 
 const PAGE_SIZE = 100;
 
@@ -99,7 +100,8 @@ export function AppLayout() {
     const [currentView, setCurrentView] = useState<'chat' | 'import' | 'posts' | 'search'>('chat');
     const [messageFocusRequest, setMessageFocusRequest] = useState<{ messageId: string; token: number } | null>(null);
     const [postFocusRequest, setPostFocusRequest] = useState<{ postId: string; token: number } | null>(null);
-    const [cloudStatus, setCloudStatus] = useState<'loading' | 'ready' | 'offline'>('loading');
+    const [cloudStatus, setCloudStatus] = useState<'loading' | 'syncing' | 'ready' | 'offline'>('loading');
+    const initialSyncDoneRef = useRef(false);
 
     const fetchMessages = useCallback(
         (chatId: string, startOffset: number) => getMessagesPaginated(chatId, PAGE_SIZE, startOffset),
@@ -238,7 +240,22 @@ export function AppLayout() {
             try {
                 const response = await fetch('/api/health', { cache: 'no-store', headers: getAuthHeaders() });
                 if (!isActive) return;
-                setCloudStatus(response.ok ? 'ready' : 'offline');
+                if (response.ok) {
+                    // Trigger initial pull sync if not done yet
+                    if (!initialSyncDoneRef.current) {
+                        initialSyncDoneRef.current = true;
+                        setCloudStatus('syncing');
+                        void syncAll().finally(() => {
+                            if (isActive) {
+                                setCloudStatus('ready');
+                            }
+                        });
+                    } else {
+                        setCloudStatus('ready');
+                    }
+                } else {
+                    setCloudStatus('offline');
+                }
             } catch {
                 if (isActive) {
                     setCloudStatus('offline');
@@ -278,7 +295,9 @@ export function AppLayout() {
             <header className={styles.header}>
                 <div className={styles.brand}>
                     <span className={styles.brandTitle}>Luciko</span>
-                    {cloudStatus === 'ready' ? (
+                    {cloudStatus === 'syncing' ? (
+                        <RefreshCw size={18} className={styles.syncIcon} />
+                    ) : cloudStatus === 'ready' ? (
                         <Cloud size={18} className={styles.cloudIcon} />
                     ) : cloudStatus === 'offline' ? (
                         <CloudOff size={18} className={styles.cloudIcon} />

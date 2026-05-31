@@ -66,17 +66,6 @@
   margin-right: 16px;
 }
 
-.instructions {
-  margin-top: 40px;
-  width: 100%;
-}
-
-.instructionsList {
-  padding-left: 20px;
-  line-height: 1.6;
-  color: var(--color-text-secondary);
-}
-
 .logsWrapper {
   margin-top: 40px;
   width: 100%;
@@ -95,4 +84,73 @@
   font-size: 12px;
   font-family: monospace;
   border-radius: 4px;
+}
+
+/* Sync progress */
+.syncStatus {
+  margin-top: 20px;
+  padding: 16px 20px;
+  border-radius: 8px;
+  width: 100%;
+  background-color: #e8f5e9;
+  border: 1px solid #c8e6c9;
+}
+
+.syncDone {
+  background-color: #d9fdd3;
+  border-color: #a5d6a7;
+}
+
+.syncWarning {
+  background-color: #fff3cd;
+  border-color: #ffc107;
+}
+
+.syncContent {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.syncIcon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.syncBody {
+  flex: 1;
+}
+
+.syncTitle {
+  margin: 0 0 4px 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.syncDetail {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.syncHint {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: #888;
+}
+
+.progressBar {
+  width: 100%;
+  height: 6px;
+  background-color: #e0e0e0;
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background-color: var(--color-primary, #008069);
+  border-radius: 3px;
+  transition: width 0.3s ease;
 }

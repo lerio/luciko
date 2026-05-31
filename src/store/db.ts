@@ -292,6 +292,10 @@ export async function getMessagesPaginated(
 export interface ImportStats {
     inserted: number;
     updated: number;
+    /** UUIDs of items that were inserted (not updated/existing). Used to identify items needing remote upload. */
+    insertedIds?: string[];
+    /** externalId values for inserted items (undefined for items without externalId). Same length/order as insertedIds. */
+    insertedExternalIds?: (string | undefined)[];
 }
 
 async function hashBlob(blob: Blob): Promise<string> {
@@ -313,6 +317,8 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
 
     let insertedCount = 0;
     let updatedCount = 0;
+    const insertedIds: string[] = [];
+    const insertedExternalIds: (string | undefined)[] = [];
 
     const normalizeMessage = (message: Message): Message => ({
         ...message,
@@ -421,6 +427,8 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
             // New message (no externalId)
             pendingPuts.push(messageStore.put(msg));
             insertedCount++;
+            insertedIds.push(msg.id);
+            insertedExternalIds.push(undefined);
         } else if (!existingMsg) {
             // Insert: message not in DB yet
             if (msg.attachments) {
@@ -438,6 +446,8 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
 
             pendingPuts.push(messageStore.put(msgToStore));
             insertedCount++;
+            insertedIds.push(msg.id);
+            insertedExternalIds.push(msg.externalId);
         } else {
             // Upgrade: message exists, merge new data
             let existing = existingMsg;
@@ -524,7 +534,7 @@ export async function importMessages(messages: Message[]): Promise<ImportStats> 
     // Await all accumulated writes, then the transaction
     await Promise.all(pendingPuts);
     await tx.done;
-    return { inserted: insertedCount, updated: updatedCount };
+    return { inserted: insertedCount, updated: updatedCount, insertedIds, insertedExternalIds };
 }
 
 /**
@@ -535,6 +545,8 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
     const db = await initDB();
     let insertedCount = 0;
     let updatedCount = 0;
+    const insertedIds: string[] = [];
+    const insertedExternalIds: (string | undefined)[] = [];
 
     // Pre-compute all media hashes and keys before opening any transaction.
     // crypto.subtle.digest is non-IDB async work that would cause auto-commit.
@@ -610,6 +622,8 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
             // New post without externalId
             pendingPuts.push(postStore.put(post));
             insertedCount++;
+            insertedIds.push(post.id);
+            insertedExternalIds.push(undefined);
         } else if (!existingPost) {
             // Insert
             if (post.media) {
@@ -626,6 +640,8 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
             }
             pendingPuts.push(postStore.put(postToStore));
             insertedCount++;
+            insertedIds.push(post.id);
+            insertedExternalIds.push(post.externalId);
         } else {
             // Upgrade
             const existing = existingPost;
@@ -678,7 +694,7 @@ export async function importPosts(posts: PostRecord[]): Promise<ImportStats> {
 
     await Promise.all(pendingPuts);
     await tx.done;
-    return { inserted: insertedCount, updated: updatedCount };
+    return { inserted: insertedCount, updated: updatedCount, insertedIds, insertedExternalIds };
 }
 
 

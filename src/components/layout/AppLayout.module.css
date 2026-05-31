@@ -59,9 +59,19 @@
   animation: cloudPulse 1.5s ease-in-out infinite;
 }
 
+.syncIcon {
+  color: #ffffff;
+  animation: syncSpin 1s linear infinite;
+}
+
 @keyframes cloudPulse {
   0%, 100% { opacity: 0.4; }
   50% { opacity: 0.8; }
+}
+
+@keyframes syncSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .nav {
@@ -112,3 +122,4 @@
     padding: 0 12px;
   }
 }
+
