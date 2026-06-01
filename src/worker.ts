@@ -160,10 +160,21 @@ async function revokeDevice(
     .run();
 }
 
+const DEVICE_TOUCH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const deviceTouchCache = new Map<string, number>();
+
+function shouldTouchDevice(deviceId: string): boolean {
+  const lastTouch = deviceTouchCache.get(deviceId) ?? 0;
+  if (Date.now() - lastTouch < DEVICE_TOUCH_INTERVAL_MS) return false;
+  deviceTouchCache.set(deviceId, Date.now());
+  return true;
+}
+
 async function touchDevice(
   db: NonNullable<Env['LUCIKO_DB']>,
   deviceId: string,
 ): Promise<void> {
+  if (!shouldTouchDevice(deviceId)) return;
   await db
     .prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?')
     .bind(Date.now(), deviceId)
@@ -253,10 +264,22 @@ const worker = {
         return json({ ok: true });
       }
 
-      // GET /api/health — requires Bearer auth
+      // GET /api/health — lightweight: validates token cryptographically
+      // but skips the D1 device-revocation check to avoid a query per poll.
       if (url.pathname === '/api/health' && request.method === 'GET') {
-        const auth = await requireBearerAuth(request, env);
-        if (!auth.authenticated) return auth.response;
+        const secret = env.LUCIKO_BASIC_AUTH_PASSWORD;
+        if (!secret) return json({ error: 'Server not configured' }, { status: 500 });
+
+        const token = extractBearerToken(request);
+        if (!token) return json({ authenticated: false }, { status: 401 });
+
+        const result = await verifyToken(token, secret);
+        if (!result.valid) return json({ authenticated: false }, { status: 401 });
+
+        // Fire-and-forget touch (debounced inside touchDevice)
+        if (env.LUCIKO_DB && result.deviceId) {
+          void touchDevice(env.LUCIKO_DB, result.deviceId);
+        }
 
         return json({
           ok: true,

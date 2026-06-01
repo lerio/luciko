@@ -266,8 +266,8 @@ export function AppLayout() {
         // Initial check
         void check();
 
-        // Re-check every 30 seconds
-        timer = setInterval(check, 30_000);
+        // Re-check every 5 minutes
+        timer = setInterval(check, 5 * 60_000);
 
         // Also check on online/offline browser events
         const handleOnline = () => { void check(); };
