@@ -1,5 +1,5 @@
 import { getAuthHeaders } from './auth';
-import { importMessages, importPosts, getMessagesCount, getTotalMessagesCount, countMessagesWithChatId, getMessagesPaginated, getPosts, getPostsCount, getAllBookmarks, importBookmarks, getAttachmentLocal } from './db';
+import { importMessages, importPosts, getMessagesCount, getTotalMessagesCount, countMessagesWithChatId, countUniqueExternalIds, deduplicateLocalMessages, getMessagesPaginated, getPosts, getPostsCount, getAllBookmarks, importBookmarks, getAttachmentLocal } from './db';
 import { TARGET_CHAT_ID } from '../constants/chat';
 
 const LAST_PULL_KEY = 'luciko_last_pull_at';
@@ -703,19 +703,24 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         // Record this pull's cutoff so next pull only gets newer items
         setLastPullAt(pullCutoff);
 
-        // Diagnostic: compare what we pulled vs what's now local vs what remote had
-        const [postPullMsgCount, postPullPostCount, totalMsgCount, manualC1Count] = await Promise.all([
+        // Diagnostic: compare what we pulled vs what's now local vs what remote had.
+        // Also count unique externalIds locally to detect local duplicates
+        // (items that share an externalId — a legacy issue from before the dedup fix).
+        const [postPullMsgCount, postPullPostCount, totalMsgCount, manualC1Count, localUniqueExtIds] = await Promise.all([
             getMessagesCount(TARGET_CHAT_ID),
             getPostsCount(),
             getTotalMessagesCount(),
             countMessagesWithChatId(TARGET_CHAT_ID),
+            countUniqueExternalIds(),
         ]);
         const dedupedCount = (totalPulledMsgs + totalPulledPosts) - totalInserted;
+        const localDupCount = postPullMsgCount - localUniqueExtIds;
         console.log('[pullNewItems] Pull complete. Pulled msgs:', totalPulledMsgs, 'posts:', totalPulledPosts,
             '| Local msgs before:', localMsgCount, 'after:', postPullMsgCount,
             '| Local posts before:', localPostCount, 'after:', postPullPostCount,
             '| Remote msgs:', remoteMsgCount, 'posts:', remotePostCount,
             '| Inserted:', totalInserted, 'deduped (already local):', dedupedCount,
+            '| Local unique extIds:', localUniqueExtIds, 'local duplicates:', localDupCount,
             '| Msg drift after pull:', remoteMsgCount - postPullMsgCount,
             '| Total msgs in store:', totalMsgCount, 'manual c1 count:', manualC1Count);
 
@@ -723,6 +728,11 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
             console.warn('[pullNewItems] WARNING:', dedupedCount, 'items were pulled from remote but NOT inserted (already local by externalId).',
                 'This indicates duplicate externalId values on the server.',
                 'Run migration 0007 to extract external_id column with UNIQUE constraint.');
+        }
+
+        if (localDupCount > 0) {
+            console.warn('[pullNewItems] WARNING:', localDupCount, 'local messages share externalIds (local duplicates).',
+                'Run deduplicateLocalMessages() to clean up.');
         }
 
         currentPullState.phase = 'done';
@@ -887,6 +897,26 @@ export async function syncAll(): Promise<void> {
     if (hasUnpushedItems) {
         console.log('[syncAll] Unpushed items detected — msgs:', unpulledMsgCount, 'posts:', unpulledPostCount,
             '(local msgs:', localMsgTotal, 'pulled:', pulledMsgIds.size, ')');
+
+        // Check if the "unpushed" items are actually local duplicates
+        // (same externalId, different id) rather than genuinely new items.
+        // This can happen when the server was deduplicated (migration 0007)
+        // but the local IndexedDB still has legacy duplicate rows.
+        const uniqueExtIds = await countUniqueExternalIds();
+        const localDupCount = localMsgTotal - uniqueExtIds;
+        if (localDupCount > 0 && localDupCount >= unpulledMsgCount) {
+            console.log('[syncAll] Local duplicates detected:', localDupCount,
+                '— cleaning up local IndexedDB instead of uploading');
+            const removed = await deduplicateLocalMessages(TARGET_CHAT_ID);
+            console.log('[syncAll] Removed', removed, 'local duplicate messages');
+
+            // Recompute local count after dedup
+            const newLocalTotal = await getMessagesCount(TARGET_CHAT_ID);
+            if (newLocalTotal <= pulledMsgIds.size) {
+                console.log('[syncAll] Local duplicates cleaned up, skipping push');
+                return;
+            }
+        }
     }
 
     // Items pulled from remote definitely exist there — skip redundant /exist checks.

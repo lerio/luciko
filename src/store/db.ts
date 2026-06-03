@@ -183,6 +183,80 @@ export async function getTotalMessagesCount(): Promise<number> {
     return db.count('messages');
 }
 
+/**
+ * Count the number of unique externalId values in the messages store.
+ * Items without an externalId each count as one unique entry.
+ */
+export async function countUniqueExternalIds(): Promise<number> {
+    const db = await initDB();
+    const tx = db.transaction('messages', 'readonly');
+    const seen = new Set<string>();
+    let noExtIdCount = 0;
+    let cursor = await tx.store.openCursor();
+    while (cursor) {
+        if (cursor.value.externalId) {
+            seen.add(cursor.value.externalId);
+        } else {
+            noExtIdCount++;
+        }
+        cursor = await cursor.continue();
+    }
+    return seen.size + noExtIdCount;
+}
+
+/**
+ * Remove duplicate messages that share the same externalId.
+ * For each externalId with multiple rows, keeps the one with the
+ * lowest row key (first inserted) and deletes the rest.
+ * Items without an externalId are never deduplicated.
+ * Returns the number of duplicates removed.
+ */
+export async function deduplicateLocalMessages(chatId: string): Promise<number> {
+    const db = await initDB();
+    const tx = db.transaction('messages', 'readwrite');
+    const index = tx.store.index('chatId');
+
+    // Collect all messages for the given chat, grouped by externalId
+    const byExternalId = new Map<string, Array<{ key: string; timestamp: Date }>>();
+    const noExtId: string[] = [];
+
+    let cursor = await index.openCursor(chatId);
+    while (cursor) {
+        const msg = cursor.value;
+        if (msg.externalId) {
+            const group = byExternalId.get(msg.externalId) || [];
+            group.push({ key: msg.id, timestamp: msg.timestamp });
+            byExternalId.set(msg.externalId, group);
+        } else {
+            noExtId.push(msg.id);
+        }
+        cursor = await cursor.continue();
+    }
+
+    let removed = 0;
+
+    // For each externalId group with more than one entry,
+    // keep the one with the earliest timestamp and delete the rest.
+    for (const [extId, entries] of byExternalId) {
+        if (entries.length <= 1) continue;
+
+        // Sort by timestamp ascending, keep the first (oldest)
+        entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        const [keep, ...remove] = entries;
+
+        for (const { key } of remove) {
+            await tx.store.delete(key);
+            removed++;
+        }
+
+        console.log('[deduplicateLocalMessages] externalId:', extId,
+            'kept:', keep.key, 'removed:', remove.length, 'duplicates');
+    }
+
+    await tx.done;
+    return removed;
+}
+
 export async function countMessagesWithChatId(chatId: string): Promise<number> {
     const db = await initDB();
     const tx = db.transaction('messages', 'readonly');
