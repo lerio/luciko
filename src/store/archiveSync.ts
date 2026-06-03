@@ -641,7 +641,10 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
                 }
                 const stats = await importMessages(normalizedItems as unknown as Parameters<typeof importMessages>[0]);
                 if (stats.inserted !== batch.items.length) {
-                    console.log('[pullNewItems] Batch import: returned', batch.items.length, 'inserted', stats.inserted, 'updated', stats.updated);
+                    const dedupedInBatch = batch.items.length - stats.inserted;
+                    console.warn('[pullNewItems] Batch dedup:', dedupedInBatch, 'of', batch.items.length,
+                        'items already existed locally (inserted', stats.inserted, 'updated', stats.updated + ')',
+                        '— duplicate externalIds on server?');
                     if (stats.insertedIds && stats.insertedIds.length > 0) {
                         console.log('[pullNewItems] Inserted IDs:', stats.insertedIds.slice(0, 10), '... count:', stats.insertedIds.length);
                         console.log('[pullNewItems] Inserted externalIds:', stats.insertedExternalIds?.slice(0, 10));
@@ -707,12 +710,20 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
             getTotalMessagesCount(),
             countMessagesWithChatId(TARGET_CHAT_ID),
         ]);
+        const dedupedCount = (totalPulledMsgs + totalPulledPosts) - totalInserted;
         console.log('[pullNewItems] Pull complete. Pulled msgs:', totalPulledMsgs, 'posts:', totalPulledPosts,
             '| Local msgs before:', localMsgCount, 'after:', postPullMsgCount,
             '| Local posts before:', localPostCount, 'after:', postPullPostCount,
             '| Remote msgs:', remoteMsgCount, 'posts:', remotePostCount,
+            '| Inserted:', totalInserted, 'deduped (already local):', dedupedCount,
             '| Msg drift after pull:', remoteMsgCount - postPullMsgCount,
             '| Total msgs in store:', totalMsgCount, 'manual c1 count:', manualC1Count);
+
+        if (dedupedCount > 0) {
+            console.warn('[pullNewItems] WARNING:', dedupedCount, 'items were pulled from remote but NOT inserted (already local by externalId).',
+                'This indicates duplicate externalId values on the server.',
+                'Run migration 0007 to extract external_id column with UNIQUE constraint.');
+        }
 
         currentPullState.phase = 'done';
         notifyPullListeners();

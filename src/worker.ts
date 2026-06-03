@@ -307,10 +307,10 @@ const worker = {
         }
 
         const table = body.entity === 'messages' ? 'archive_messages' : 'archive_posts';
-        // Using json_extract to pull externalId from the JSON payload column.
-        // For a single-user archive with thousands of items, the lack of an index is acceptable.
+        // Use the dedicated external_id column (added in migration 0007)
+        // which has a unique index for fast lookups.
         const placeholders = body.ids.map(() => '?').join(',');
-        const query = `SELECT DISTINCT json_extract(payload, '$.externalId') AS eid FROM ${table} WHERE json_extract(payload, '$.externalId') IN (${placeholders})`;
+        const query = `SELECT DISTINCT external_id AS eid FROM ${table} WHERE external_id IN (${placeholders})`;
 
         const result = await env.LUCIKO_DB.prepare(query).bind(...body.ids).all<{ eid: string | null }>();
         const existingIds = result.results.map(r => r.eid).filter(Boolean) as string[];
@@ -348,25 +348,30 @@ const worker = {
 
           let insertedCount = 0;
 
-          // Insert each item individually
+          // Insert each item individually.
+          // Extract externalId from payload so it's stored in the dedicated column,
+          // which has a UNIQUE index to prevent duplicate externalId values.
           for (const item of body.items) {
             const itemPayload = JSON.stringify(item);
 
             try {
               if (body.entity === 'messages') {
-                const msg = item as { id: string; chatId: string; timestamp: number | string };
+                const msg = item as { id: string; chatId: string; timestamp: number | string; externalId?: string };
                 const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : new Date(msg.timestamp).getTime();
+                const externalId = msg.externalId || null;
 
                 const result = await db.prepare(
-                  `INSERT OR IGNORE INTO archive_messages (id, chat_id, timestamp, payload, updated_at) VALUES (?, ?, ?, ?, ?)`
-                ).bind(msg.id, msg.chatId || '', timestamp, itemPayload, now).run() as { meta?: { changes?: number }; changes?: number };
+                  `INSERT OR REPLACE INTO archive_messages (id, chat_id, timestamp, payload, updated_at, external_id) VALUES (?, ?, ?, ?, ?, ?)`
+                ).bind(msg.id, msg.chatId || '', timestamp, itemPayload, now, externalId).run() as { meta?: { changes?: number }; changes?: number };
                 const changes = result.meta?.changes ?? result.changes ?? 0;
                 if (changes > 0) insertedCount++;
               } else {
-                const post = item as { id: string; timestamp: number };
+                const post = item as { id: string; timestamp: number; externalId?: string };
+                const externalId = post.externalId || null;
+
                 const result = await db.prepare(
-                  `INSERT OR IGNORE INTO archive_posts (id, timestamp, payload, updated_at) VALUES (?, ?, ?, ?)`
-                ).bind(post.id, post.timestamp, itemPayload, now).run() as { meta?: { changes?: number }; changes?: number };
+                  `INSERT OR REPLACE INTO archive_posts (id, timestamp, payload, updated_at, external_id) VALUES (?, ?, ?, ?, ?, ?)`
+                ).bind(post.id, post.timestamp, itemPayload, now, externalId).run() as { meta?: { changes?: number }; changes?: number };
                 const changes = result.meta?.changes ?? result.changes ?? 0;
                 if (changes > 0) insertedCount++;
               }
