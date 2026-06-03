@@ -731,8 +731,11 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         }
 
         if (localDupCount > 0) {
-            console.warn('[pullNewItems] WARNING:', localDupCount, 'local messages share externalIds (local duplicates).',
-                'Run deduplicateLocalMessages() to clean up.');
+            console.warn('[pullNewItems] Auto-cleaning', localDupCount, 'local duplicate messages...');
+            const removed = await deduplicateLocalMessages(TARGET_CHAT_ID);
+            const afterDedupCount = await getMessagesCount(TARGET_CHAT_ID);
+            console.log('[pullNewItems] Removed', removed, 'local duplicates. Local count:', afterDedupCount,
+                '(was', postPullMsgCount, 'remote:', remoteMsgCount, 'drift:', remoteMsgCount - afterDedupCount, ')');
         }
 
         currentPullState.phase = 'done';
