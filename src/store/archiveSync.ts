@@ -867,9 +867,26 @@ export async function syncAll(): Promise<void> {
     const lastPushAt = getLastPushAt();
     const localChangedAt = getLocalChangedAt();
 
-    if (localChangedAt <= lastPushAt) {
+    // Count how many local items were NOT just pulled from remote.
+    // These are candidates for upload: they exist locally but not on the server.
+    // We compute this regardless of the localChangedAt guard so that
+    // server-side changes (e.g., migration dedup) don't strand local items.
+    const [localMsgTotal, localPostTotal] = await Promise.all([
+        getMessagesCount(TARGET_CHAT_ID),
+        getPostsCount(),
+    ]);
+    const unpulledMsgCount = Math.max(0, localMsgTotal - pulledMsgIds.size);
+    const unpulledPostCount = Math.max(0, localPostTotal - pulledPostIds.size);
+    const hasUnpushedItems = unpulledMsgCount > 0 || unpulledPostCount > 0;
+
+    if (localChangedAt <= lastPushAt && !hasUnpushedItems) {
         console.log('[syncAll] Local data unchanged since last push, skipping push phase');
         return;
+    }
+
+    if (hasUnpushedItems) {
+        console.log('[syncAll] Unpushed items detected — msgs:', unpulledMsgCount, 'posts:', unpulledPostCount,
+            '(local msgs:', localMsgTotal, 'pulled:', pulledMsgIds.size, ')');
     }
 
     // Items pulled from remote definitely exist there — skip redundant /exist checks.
