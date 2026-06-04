@@ -535,7 +535,7 @@ async function pullBatch(
  *
  * Fire-and-forget — progress is communicated via onPullProgress.
  */
-export async function pullNewItems(): Promise<{ success: boolean; inserted: number; error?: string; pulledMsgExternalIds: Set<string>; pulledPostExternalIds: Set<string> }> {
+export async function pullNewItems(): Promise<{ success: boolean; inserted: number; error?: string; pulledMsgExternalIds: Set<string>; pulledPostExternalIds: Set<string>; remoteMsgCount: number; remotePostCount: number }> {
     const generation = ++pullGeneration;
 
     const pulledMsgExternalIds = new Set<string>();
@@ -546,7 +546,7 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
     if (!authHeaders.Authorization) {
         currentPullState = { phase: 'skipped_offline', totalItems: 0, pulledItems: 0, insertedLocal: 0 };
         notifyPullListeners();
-        return { success: false, inserted: 0, error: 'Not authenticated', pulledMsgExternalIds, pulledPostExternalIds };
+        return { success: false, inserted: 0, error: 'Not authenticated', pulledMsgExternalIds, pulledPostExternalIds, remoteMsgCount: 0, remotePostCount: 0 };
     }
 
     currentPullState = { phase: 'checking', totalItems: 0, pulledItems: 0, insertedLocal: 0 };
@@ -576,9 +576,12 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         // Self-healing drift check: if a previous pull was incomplete (e.g. due to
         // the old pagination bug), the cursor may be past items that never made it
         // to the local store. Compare remote counts and reset if remote has more.
+        // Only run when the cursor is at least 30 seconds old — on a fresh page
+        // refresh right after a successful sync, the cursor is trustworthy.
         let remoteMsgCount = 0;
         let remotePostCount = 0;
-        if (lastPullAt > 0) {
+        const CURSOR_STALE_MS = 30_000;
+        if (lastPullAt > 0 && (Date.now() - lastPullAt) > CURSOR_STALE_MS) {
             try {
                 const authHeaders = getAuthHeaders();
                 if (authHeaders.Authorization) {
@@ -601,6 +604,10 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
             } catch {
                 // Best-effort; proceed with existing cursor if count check fails
             }
+        } else if (lastPullAt > 0) {
+            // Cursor is fresh (recent sync). Skip the drift check entirely
+            // to save one HTTP request. The push guard in syncAll() will use
+            // localChangedAt to decide whether a push is needed.
         }
 
         const pullCutoff = Date.now();
@@ -618,7 +625,7 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         let hasMore = true;
         while (hasMore) {
             if (generation !== pullGeneration) {
-                return { success: false, inserted: totalInserted, error: 'Pull superseded', pulledMsgExternalIds, pulledPostExternalIds };
+                return { success: false, inserted: totalInserted, error: 'Pull superseded', pulledMsgExternalIds, pulledPostExternalIds, remoteMsgCount, remotePostCount };
             }
 
             const url = `/api/sync/pull?entity=messages&since=${since}&sinceId=${encodeURIComponent(sinceId)}&chatId=${encodeURIComponent(TARGET_CHAT_ID)}&limit=${PULL_BATCH_SIZE}`;
@@ -668,7 +675,7 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         hasMore = true;
         while (hasMore) {
             if (generation !== pullGeneration) {
-                return { success: false, inserted: totalInserted, error: 'Pull superseded', pulledMsgExternalIds, pulledPostExternalIds };
+                return { success: false, inserted: totalInserted, error: 'Pull superseded', pulledMsgExternalIds, pulledPostExternalIds, remoteMsgCount, remotePostCount };
             }
 
             const url = `/api/sync/pull?entity=posts&since=${since}&sinceId=${encodeURIComponent(sinceId)}&limit=${PULL_BATCH_SIZE}`;
@@ -703,51 +710,56 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         // Record this pull's cutoff so next pull only gets newer items
         setLastPullAt(pullCutoff);
 
-        // Diagnostic: compare what we pulled vs what's now local vs what remote had.
-        // Also count unique externalIds locally to detect local duplicates
-        // (items that share an externalId — a legacy issue from before the dedup fix).
-        const [postPullMsgCount, postPullPostCount, totalMsgCount, manualC1Count, localUniqueExtIds] = await Promise.all([
+        // Diagnostic: always report the basic counts (fast index-based queries).
+        const [postPullMsgCount, postPullPostCount] = await Promise.all([
             getMessagesCount(TARGET_CHAT_ID),
             getPostsCount(),
-            getTotalMessagesCount(),
-            countMessagesWithChatId(TARGET_CHAT_ID),
-            countUniqueExternalIds(),
         ]);
         const dedupedCount = (totalPulledMsgs + totalPulledPosts) - totalInserted;
-        const localDupCount = postPullMsgCount - localUniqueExtIds;
         console.log('[pullNewItems] Pull complete. Pulled msgs:', totalPulledMsgs, 'posts:', totalPulledPosts,
             '| Local msgs before:', localMsgCount, 'after:', postPullMsgCount,
             '| Local posts before:', localPostCount, 'after:', postPullPostCount,
             '| Remote msgs:', remoteMsgCount, 'posts:', remotePostCount,
-            '| Inserted:', totalInserted, 'deduped (already local):', dedupedCount,
-            '| Local unique extIds:', localUniqueExtIds, 'local duplicates:', localDupCount,
-            '| Msg drift after pull:', remoteMsgCount - postPullMsgCount,
-            '| Total msgs in store:', totalMsgCount, 'manual c1 count:', manualC1Count);
+            '| Inserted:', totalInserted, 'deduped (already local):', dedupedCount);
 
-        if (dedupedCount > 0) {
-            console.warn('[pullNewItems] WARNING:', dedupedCount, 'items were pulled from remote but NOT inserted (already local by externalId).',
-                'This indicates duplicate externalId values on the server.',
-                'Run migration 0007 to extract external_id column with UNIQUE constraint.');
-        }
+        // Full diagnostics (expensive IndexedDB cursor scans + dedup) only when
+        // items were actually inserted. On a no-op page refresh this is skipped.
+        if (totalInserted > 0) {
+            const [totalMsgCount, manualC1Count, localUniqueExtIds] = await Promise.all([
+                getTotalMessagesCount(),
+                countMessagesWithChatId(TARGET_CHAT_ID),
+                countUniqueExternalIds(),
+            ]);
+            const localDupCount = postPullMsgCount - localUniqueExtIds;
+            console.log('[pullNewItems] Local unique extIds:', localUniqueExtIds, 'local duplicates:', localDupCount,
+                '| Msg drift after pull:', remoteMsgCount - postPullMsgCount,
+                '| Total msgs in store:', totalMsgCount, 'manual c1 count:', manualC1Count);
 
-        if (localDupCount > 0) {
-            console.warn('[pullNewItems] Auto-cleaning', localDupCount, 'local duplicate messages...');
-            const removed = await deduplicateLocalMessages(TARGET_CHAT_ID);
-            const afterDedupCount = await getMessagesCount(TARGET_CHAT_ID);
-            console.log('[pullNewItems] Removed', removed, 'local duplicates. Local count:', afterDedupCount,
-                '(was', postPullMsgCount, 'remote:', remoteMsgCount, 'drift:', remoteMsgCount - afterDedupCount, ')');
+            if (dedupedCount > 0) {
+                console.warn('[pullNewItems] WARNING:', dedupedCount, 'items were pulled from remote but NOT inserted (already local by externalId).',
+                    'This indicates duplicate externalId values on the server.',
+                    'Run migration 0007 to extract external_id column with UNIQUE constraint.');
+            }
+
+            if (localDupCount > 0) {
+                console.warn('[pullNewItems] Auto-cleaning', localDupCount, 'local duplicate messages...');
+                const removed = await deduplicateLocalMessages(TARGET_CHAT_ID);
+                const afterDedupCount = await getMessagesCount(TARGET_CHAT_ID);
+                console.log('[pullNewItems] Removed', removed, 'local duplicates. Local count:', afterDedupCount,
+                    '(was', postPullMsgCount, 'remote:', remoteMsgCount, 'drift:', remoteMsgCount - afterDedupCount, ')');
+            }
         }
 
         currentPullState.phase = 'done';
         notifyPullListeners();
 
-        return { success: true, inserted: totalInserted, pulledMsgExternalIds, pulledPostExternalIds };
+        return { success: true, inserted: totalInserted, pulledMsgExternalIds, pulledPostExternalIds, remoteMsgCount, remotePostCount };
     } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown pull error';
 
         // Don't overwrite state if superseded
         if (errorMsg === 'Pull superseded') {
-            return { success: false, inserted: currentPullState.insertedLocal, error: errorMsg, pulledMsgExternalIds, pulledPostExternalIds };
+            return { success: false, inserted: currentPullState.insertedLocal, error: errorMsg, pulledMsgExternalIds, pulledPostExternalIds, remoteMsgCount: 0, remotePostCount: 0 };
         }
 
         const isOffline =
@@ -758,7 +770,7 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
         currentPullState.error = errorMsg;
         notifyPullListeners();
 
-        return { success: false, inserted: currentPullState.insertedLocal, error: errorMsg, pulledMsgExternalIds, pulledPostExternalIds };
+        return { success: false, inserted: currentPullState.insertedLocal, error: errorMsg, pulledMsgExternalIds, pulledPostExternalIds, remoteMsgCount: 0, remotePostCount: 0 };
     }
 }
 
@@ -858,12 +870,16 @@ export async function syncAll(): Promise<void> {
     // ── 1. Pull remote → local (download new items first) ──
     let pulledMsgIds = new Set<string>();
     let pulledPostIds = new Set<string>();
+    let remoteMsgCount = 0;
+    let remotePostCount = 0;
 
     try {
         console.log('[syncAll] Pulling new items from remote');
         const result = await pullNewItems();
         pulledMsgIds = result.pulledMsgExternalIds;
         pulledPostIds = result.pulledPostExternalIds;
+        remoteMsgCount = result.remoteMsgCount;
+        remotePostCount = result.remotePostCount;
     } catch (err) {
         console.error('[syncAll] Pull failed:', err);
     }
@@ -880,31 +896,57 @@ export async function syncAll(): Promise<void> {
     const lastPushAt = getLastPushAt();
     const localChangedAt = getLocalChangedAt();
 
-    // Count how many local items were NOT just pulled from remote.
-    // These are candidates for upload: they exist locally but not on the server.
-    // We compute this regardless of the localChangedAt guard so that
-    // server-side changes (e.g., migration dedup) don't strand local items.
+    // Determine if there are local items not yet on the server.
+    // When pullNewItems() returned items, use exact set subtraction (pulledMsgIds).
+    // When it returned 0 items (common case on page refresh), pulledMsgIds is
+    // empty — fall back to comparing local vs remote counts.
+    // When remote count is also unknown (first sync or fresh cursor), use
+    // localChangedAt as a heuristic: if nothing changed locally, assume parity.
     const [localMsgTotal, localPostTotal] = await Promise.all([
         getMessagesCount(TARGET_CHAT_ID),
         getPostsCount(),
     ]);
-    const unpulledMsgCount = Math.max(0, localMsgTotal - pulledMsgIds.size);
-    const unpulledPostCount = Math.max(0, localPostTotal - pulledPostIds.size);
+
+    let unpulledMsgCount: number;
+    let unpulledPostCount: number;
+    if (pulledMsgIds.size > 0 || pulledPostIds.size > 0) {
+        // Pull returned items — use exact set subtraction
+        unpulledMsgCount = Math.max(0, localMsgTotal - pulledMsgIds.size);
+        unpulledPostCount = Math.max(0, localPostTotal - pulledPostIds.size);
+    } else if (remoteMsgCount > 0 || remotePostCount > 0) {
+        // Pull returned nothing but we have remote counts (drift check ran)
+        unpulledMsgCount = Math.max(0, localMsgTotal - remoteMsgCount);
+        unpulledPostCount = Math.max(0, localPostTotal - remotePostCount);
+    } else {
+        // Remote count unknown (first sync with lastPullAt=0, or fresh cursor).
+        // If nothing changed locally since last push, assume we're in sync.
+        // If local data changed (e.g., import where syncNewItems was called
+        // directly), run the push to be safe.
+        unpulledMsgCount = (localChangedAt > lastPushAt) ? localMsgTotal : 0;
+        unpulledPostCount = (localChangedAt > lastPushAt) ? localPostTotal : 0;
+    }
     const hasUnpushedItems = unpulledMsgCount > 0 || unpulledPostCount > 0;
 
-    if (localChangedAt <= lastPushAt && !hasUnpushedItems) {
-        console.log('[syncAll] Local data unchanged since last push, skipping push phase');
+    if (!hasUnpushedItems) {
+        // All local items are confirmed on remote (or assumed in sync).
+        console.log('[syncAll] All local items confirmed on remote, skipping push phase');
+        if (localChangedAt > lastPushAt) {
+            // Local changes were already uploaded by a direct syncNewItems()
+            // call (e.g., from ImportPage). Record the timestamp so future
+            // refreshes skip the count checks.
+            setLastPushAt(Date.now());
+        }
         return;
     }
 
-    if (hasUnpushedItems) {
-        console.log('[syncAll] Unpushed items detected — msgs:', unpulledMsgCount, 'posts:', unpulledPostCount,
-            '(local msgs:', localMsgTotal, 'pulled:', pulledMsgIds.size, ')');
+    console.log('[syncAll] Unpushed items detected — msgs:', unpulledMsgCount, 'posts:', unpulledPostCount,
+        '(local msgs:', localMsgTotal, 'remote msgs:', remoteMsgCount, 'pulled:', pulledMsgIds.size, ')');
 
-        // Check if the "unpushed" items are actually local duplicates
-        // (same externalId, different id) rather than genuinely new items.
-        // This can happen when the server was deduplicated (migration 0007)
-        // but the local IndexedDB still has legacy duplicate rows.
+    // Check if the "unpushed" items are actually local duplicates
+    // (same externalId, different id) rather than genuinely new items.
+    // This can happen when the server was deduplicated (migration 0007)
+    // but the local IndexedDB still has legacy duplicate rows.
+    if (unpulledMsgCount > 0) {
         const uniqueExtIds = await countUniqueExternalIds();
         const localDupCount = localMsgTotal - uniqueExtIds;
         if (localDupCount > 0 && localDupCount >= unpulledMsgCount) {
@@ -915,8 +957,9 @@ export async function syncAll(): Promise<void> {
 
             // Recompute local count after dedup
             const newLocalTotal = await getMessagesCount(TARGET_CHAT_ID);
-            if (newLocalTotal <= pulledMsgIds.size) {
+            if (newLocalTotal <= remoteMsgCount) {
                 console.log('[syncAll] Local duplicates cleaned up, skipping push');
+                setLastPushAt(Date.now());
                 return;
             }
         }
