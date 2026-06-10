@@ -1,3 +1,20 @@
+/**
+ * Full-text search page with scope tabs and result navigation.
+ *
+ * Features:
+ * - **Debounced search** — Typing triggers a search after 200ms of inactivity.
+ * - **Scope tabs** — "All" (messages + posts), "Chat" (messages only), or
+ *   "Posts" (posts only). Changing scope re-runs the current query.
+ * - **Result display** — Messages and posts are shown in separate sections
+ *   with counts. Each result card shows metadata (sender/author, timestamp,
+ *   source) and a text excerpt with the matching term highlighted.
+ * - **Click-to-navigate** — Clicking a result calls `onOpenMessage` or
+ *   `onOpenPost`, which switches the main view to Chat or Posts and jumps
+ *   to the specific item.
+ *
+ * @module SearchPage
+ */
+
 import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import styles from './SearchPage.module.css';
@@ -10,6 +27,13 @@ interface SearchPageProps {
     onOpenPost: (postId: string) => void;
 }
 
+/**
+ * Full-text search page component.
+ *
+ * Searches the local IndexedDB archive for messages and/or posts matching
+ * the user's query, with results split by type and clickable to navigate
+ * to the source item in the Chat or Posts view.
+ */
 export function SearchPage({ onOpenMessage, onOpenPost }: SearchPageProps) {
     const [query, setQuery] = useState('');
     const [scope, setScope] = useState<SearchScope>('all');

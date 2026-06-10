@@ -1,3 +1,24 @@
+/**
+ * Social media posts feed with infinite scroll, bookmarks, and hide/show.
+ *
+ * Features:
+ * - **Infinite scroll** — Two IntersectionObserver sentinels trigger loading
+ *   older/newer pages of 60 posts each.
+ * - **Media grid** — Renders images and videos from post attachments, with a
+ *   single-column layout for one-media posts.
+ * - **Bookmarks** — Persisted to IndexedDB under the key `"posts"`. A bookmark
+ *   button in the header scrolls to the bookmarked post (loading surrounding
+ *   context if needed).
+ * - **Hide/unhide** — Posts can be hidden (persisted to IndexedDB). A toggle
+ *   button in the header shows or hides hidden posts.
+ * - **Search focus** — Accepts a `focusRequest` prop to jump to a specific
+ *   post from the search page.
+ * - **Avatar resolution** — Hardcoded: authors matching "valerio" get
+ *   `/assets/valerio.jpg`; all others get the default TARGET_CHAT avatar.
+ *
+ * @module PostsPage
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { format } from "date-fns";
 import { Bookmark, Eye, EyeOff } from "lucide-react";
@@ -5,15 +26,14 @@ import styles from "./PostsPage.module.css";
 import { TARGET_CHAT } from "../../constants/chat";
 import {
   getAttachment,
-  getBookmark,
   getHiddenItems,
   getPostOffset,
   getPostsCount,
   getPostsPaginated,
-  setBookmark,
   setHiddenItem,
 } from "../../store/db";
-import { markLocalChanged } from "../../store/archiveSync";
+import { useBookmark } from "../../hooks/useBookmark";
+import { useInfiniteScroll } from "../../hooks/useInfiniteScroll";
 import type { PostRecord } from "../../types/posts";
 import { normalizeMojibakeText } from "../../utils/text";
 
@@ -44,8 +64,6 @@ export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProp
   const [hasOlder, setHasOlder] = useState(false);
   const [hasNewer, setHasNewer] = useState(false);
   const [loadedCount, setLoadedCount] = useState(0);
-  const [bookmarkedPostId, setBookmarkedPostId] = useState<string | null>(null);
-  const [isBookmarkReady, setIsBookmarkReady] = useState(false);
   const [hiddenPostIds, setHiddenPostIds] = useState<Set<string>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
   const objectUrlsRef = useRef<string[]>([]);
@@ -54,7 +72,16 @@ export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProp
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const isFetchingRef = useRef(false);
 
-  const hydratePosts = useCallback(
+  const { bookmarkedId: bookmarkedPostId, toggleBookmark } = useBookmark('posts');
+
+  /**
+ * Converts raw PostRecord objects into renderable Post objects by loading
+ * media blobs from IndexedDB and creating object URLs.
+ *
+ * Filters out posts that have no text, no media, and no link URL.
+ * Applies mojibake normalization to text and activity fields.
+ */
+const hydratePosts = useCallback(
     async (records: PostRecord[]): Promise<Post[]> => {
       const normalizedPosts: Post[] = [];
       for (const post of records) {
@@ -179,29 +206,6 @@ export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProp
 
   useEffect(() => {
     let isActive = true;
-    const loadBookmark = async () => {
-      try {
-        const stored = await getBookmark("posts");
-        if (isActive) {
-          setBookmarkedPostId(stored);
-          setIsBookmarkReady(true);
-        }
-      } catch (err) {
-        console.warn("Failed to load posts bookmark:", err);
-        if (isActive) {
-          setIsBookmarkReady(true);
-        }
-      }
-    };
-
-    loadBookmark();
-    return () => {
-      isActive = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let isActive = true;
     const loadHidden = async () => {
       try {
         const hidden = await getHiddenItems("posts");
@@ -220,20 +224,6 @@ export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProp
       isActive = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (!isBookmarkReady) return;
-    const persist = async () => {
-      try {
-        await setBookmark("posts", bookmarkedPostId);
-        markLocalChanged();
-      } catch (err) {
-        console.warn("Failed to persist posts bookmark:", err);
-      }
-    };
-
-    persist();
-  }, [bookmarkedPostId, isBookmarkReady]);
 
   const loadOlderPosts = useCallback(async () => {
     if (!hasOlder || isFetchingRef.current) return 0;
@@ -285,41 +275,15 @@ export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProp
     }
   }, [hasNewer, offset, hydratePosts, loadedCount, totalCount]);
 
-  useEffect(() => {
-    if (!hasOlder) return;
-    const root = pageRef.current;
-    if (!root || !topSentinelRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          loadOlderPosts();
-        }
-      },
-      { root, rootMargin: "200px 0px", threshold: 0 },
-    );
-    observer.observe(topSentinelRef.current);
-    return () => observer.disconnect();
-  }, [hasOlder, loadOlderPosts, posts.length]);
-
-  useEffect(() => {
-    if (!hasNewer) return;
-    const root = pageRef.current;
-    if (!root || !bottomSentinelRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          loadNewerPosts();
-        }
-      },
-      { root, rootMargin: "200px 0px", threshold: 0 },
-    );
-    observer.observe(bottomSentinelRef.current);
-    return () => observer.disconnect();
-  }, [hasNewer, loadNewerPosts, posts.length]);
-
-  const handleBookmark = (postId: string) => {
-    setBookmarkedPostId((current) => (current === postId ? null : postId));
-  };
+  useInfiniteScroll({
+    rootRef: pageRef,
+    topSentinelRef,
+    bottomSentinelRef,
+    hasOlder,
+    hasNewer,
+    onLoadOlder: loadOlderPosts,
+    onLoadNewer: loadNewerPosts,
+  });
 
   const handleToggleHidden = async (postId: string) => {
     const next = new Set(hiddenPostIds);
@@ -436,7 +400,7 @@ export function PostsPage({ focusRequest, onFocusRequestHandled }: PostsPageProp
               <div className={styles.postActions}>
                 <button
                   className={`${styles.bookmarkButton} ${bookmarkedPostId === post.id ? styles.bookmarkButtonActive : ""}`}
-                  onClick={() => handleBookmark(post.id)}
+                  onClick={() => toggleBookmark(post.id)}
                   aria-label={
                     bookmarkedPostId === post.id
                       ? "Remove bookmark"

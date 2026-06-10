@@ -1,9 +1,29 @@
+/**
+ * Chat message view with infinite scroll, sticky date headers, and bookmarking.
+ *
+ * Features:
+ * - **Infinite scroll** — Two {@link IntersectionObserver} sentinels trigger
+ *   loading older/newer messages when they enter the viewport. Scroll position
+ *   is preserved when older messages are prepended.
+ * - **Sticky date header** — An overlay at the top of the scrollable area
+ *   shows the date of the first currently-visible date marker. The "covered"
+ *   marker in the list is hidden to avoid duplication.
+ * - **Bookmarks** — Loads the persisted bookmark on mount and auto-scrolls to
+ *   it on first load. Bookmark changes are persisted back to IndexedDB.
+ * - **Search result focus** — Accepts a `focusRequest` prop from the search
+ *   page and jumps to the requested message, loading surrounding context if
+ *   needed.
+ * - **Scroll-to-bottom** — Floating button that reloads the latest page.
+ *
+ * @module ChatArea
+ */
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Chat, Message } from "../../types/chat";
 import { MessageList } from "../chat/MessageList";
 import { Bookmark } from "lucide-react";
-import { getBookmark, setBookmark } from "../../store/db";
-import { markLocalChanged } from "../../store/archiveSync";
+import { useBookmark } from "../../hooks/useBookmark";
+import { useInfiniteScroll } from "../../hooks/useInfiniteScroll";
 import styles from "./ChatArea.module.css";
 import { format } from "date-fns";
 import messageListStyles from "../chat/MessageList.module.css";
@@ -21,8 +41,16 @@ interface ChatAreaProps {
   onFocusRequestHandled?: () => void;
 }
 
+/** Hardcoded current user — used to determine message alignment (sent vs received). */
 const CURRENT_USER_ID = "Valerio Donati";
 
+/**
+ * Renders the chat area for a single conversation.
+ *
+ * Handles message display, infinite scroll via sentinel elements,
+ * sticky date overlay, bookmark persistence and scroll-to-bookmark,
+ * and search result focus navigation.
+ */
 export function ChatArea({
   activeChat,
   messages,
@@ -38,15 +66,12 @@ export function ChatArea({
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const bottomSentinelRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
-  const bookmarkLoadTokenRef = useRef(0);
   const initialAutoScrollRef = useRef(true);
   const hiddenMarkerRef = useRef<HTMLElement | null>(null);
-  const [bookmarkedMessageId, setBookmarkedMessageId] = useState<string | null>(
-    null,
-  );
-  const [isBookmarkReady, setIsBookmarkReady] = useState(false);
   const [isBookmarkScrollPending, setIsBookmarkScrollPending] = useState(false);
   const [stickyDateLabel, setStickyDateLabel] = useState<string | null>(null);
+
+  const { bookmarkedId: bookmarkedMessageId, toggleBookmark: handleBookmark, isReady: isBookmarkReady } = useBookmark(activeChat?.id ?? '');
 
   const scrollToBottom = async () => {
     if (onJumpToLatest) {
@@ -78,14 +103,6 @@ export function ChatArea({
     await onLoadNewer();
   }, [onLoadNewer]);
 
-  const handleBookmark = useCallback((messageId: string) => {
-    // Invalidate any in-flight bookmark load so it cannot overwrite user intent.
-    bookmarkLoadTokenRef.current += 1;
-    setBookmarkedMessageId((current) =>
-      current === messageId ? null : messageId,
-    );
-  }, []);
-
   const handleScrollToBookmark = useCallback(async () => {
     if (!bookmarkedMessageId) return;
     const target = document.getElementById(`message-${bookmarkedMessageId}`);
@@ -102,38 +119,6 @@ export function ChatArea({
       }
     }
   }, [bookmarkedMessageId, onJumpToBookmark]);
-
-  useEffect(() => {
-    let isActive = true;
-    if (!activeChat?.id) {
-      return () => {
-        isActive = false;
-      };
-    }
-    const loadToken = bookmarkLoadTokenRef.current + 1;
-    bookmarkLoadTokenRef.current = loadToken;
-
-    const load = async () => {
-      try {
-        const stored = await getBookmark(activeChat.id);
-        if (!isActive || bookmarkLoadTokenRef.current !== loadToken) return;
-        setBookmarkedMessageId(stored);
-      } catch (error) {
-        if (!isActive || bookmarkLoadTokenRef.current !== loadToken) return;
-        console.warn("Failed to read bookmark from storage:", error);
-        setBookmarkedMessageId(null);
-      } finally {
-        if (isActive && bookmarkLoadTokenRef.current === loadToken) {
-          setIsBookmarkReady(true);
-        }
-      }
-    };
-
-    load();
-    return () => {
-      isActive = false;
-    };
-  }, [activeChat?.id]);
 
   // Reset auto-scroll flag when the active chat changes.
   useEffect(() => {
@@ -165,22 +150,6 @@ export function ChatArea({
       });
     }
   }, [isBookmarkReady, bookmarkedMessageId, messages.length, onJumpToBookmark]);
-
-  useEffect(() => {
-    if (!activeChat?.id) return;
-    if (!isBookmarkReady) return;
-
-    const persist = async () => {
-      try {
-        await setBookmark(activeChat.id, bookmarkedMessageId);
-        markLocalChanged();
-      } catch (error) {
-        console.warn("Failed to persist bookmark to storage:", error);
-      }
-    };
-
-    persist();
-  }, [activeChat?.id, bookmarkedMessageId, isBookmarkReady]);
 
   useEffect(() => {
     if (!isBookmarkScrollPending || !bookmarkedMessageId) return;
@@ -305,45 +274,16 @@ export function ChatArea({
     };
   }, [messages]);
 
-  useEffect(() => {
-    if (!onLoadOlder || !hasOlder) return;
+  useInfiniteScroll({
+    rootRef: messagesRef,
+    topSentinelRef,
+    bottomSentinelRef,
+    hasOlder: hasOlder ?? false,
+    hasNewer: hasNewer ?? false,
+    onLoadOlder: handleLoadOlder,
+    onLoadNewer: handleLoadNewer,
+  });
 
-    const root = messagesRef.current;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          handleLoadOlder();
-        }
-      },
-      { root, rootMargin: "200px 0px", threshold: 0 },
-    );
-
-    if (topSentinelRef.current) {
-      observer.observe(topSentinelRef.current);
-    }
-
-    return () => observer.disconnect();
-  }, [handleLoadOlder, hasOlder, onLoadOlder]);
-
-  useEffect(() => {
-    if (!onLoadNewer || !hasNewer) return;
-
-    const root = messagesRef.current;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          handleLoadNewer();
-        }
-      },
-      { root, rootMargin: "200px 0px", threshold: 0 },
-    );
-
-    if (bottomSentinelRef.current) {
-      observer.observe(bottomSentinelRef.current);
-    }
-
-    return () => observer.disconnect();
-  }, [handleLoadNewer, hasNewer, onLoadNewer]);
   if (!activeChat) {
     return (
       <main className={`${styles.mainBase} ${styles.emptyState}`}>

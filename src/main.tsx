@@ -1,3 +1,12 @@
+/**
+ * Luciko application entry point.
+ *
+ * Bootstraps the React app into the DOM and exposes debug helpers on
+ * `window.__luciko` for manual IndexedDB deduplication from the browser console.
+ *
+ * @module main
+ */
+
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles/global.css'

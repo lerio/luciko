@@ -1,3 +1,14 @@
+/**
+ * Displays local (IndexedDB) and remote (D1) item counts side by side.
+ *
+ * Fetches local counts from IndexedDB and remote counts from
+ * `/api/sync/counts`. A refresh button re-fetches both. Gracefully handles
+ * missing auth, server errors, and HTML responses (when running under
+ * `npm run dev` without the Worker).
+ *
+ * @module StorageInfo
+ */
+
 import { useState, useEffect, useCallback } from 'react';
 import { HardDrive, Database, RefreshCw } from 'lucide-react';
 import { getMessagesCount, getPostsCount } from '../../store/db';
@@ -12,6 +23,12 @@ interface RemoteCounts {
 
 type FetchState = 'idle' | 'loading' | 'loaded' | 'error';
 
+/**
+ * Storage info panel component.
+ *
+ * Renders two cards — Local and Remote — showing message and post counts.
+ * Fetches data on mount and provides a manual refresh button.
+ */
 export function StorageInfo() {
     const [localMessages, setLocalMessages] = useState<number | null>(null);
     const [localPosts, setLocalPosts] = useState<number | null>(null);

@@ -1,3 +1,18 @@
+/**
+ * Renders a list of messages with automatic date separators.
+ *
+ * Iterates through messages and inserts a date chip whenever the day
+ * changes between consecutive messages. Each message is rendered via
+ * {@link MessageBubble}, receiving `isMe` based on whether its sender
+ * matches `currentUserId`.
+ *
+ * Date markers carry `data-date-marker="true"` and `data-date-label`
+ * attributes so the parent {@link ChatArea} can implement sticky date
+ * headers by hiding the in-flow marker that matches the current sticky label.
+ *
+ * @module MessageList
+ */
+
 import type { Message } from '../../types/chat';
 import { MessageBubble } from './MessageBubble';
 import { format, isSameDay } from 'date-fns';

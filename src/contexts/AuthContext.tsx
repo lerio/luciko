@@ -1,3 +1,16 @@
+/**
+ * Authentication context and provider for Luciko.
+ *
+ * Manages the authentication lifecycle:
+ * 1. On mount, validates any stored Bearer token against `/api/auth/status`.
+ * 2. On network errors, treats stored credentials as valid (offline-first).
+ * 3. Provides `login` / `logout` callbacks that persist or clear the token.
+ *
+ * The username is always `"luciko"`; only the password is collected.
+ *
+ * @module AuthContext
+ */
+
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { getStoredAuth, setStoredAuth, clearStoredAuth, login as apiLogin, logout as apiLogout, getAuthHeaders } from '../store/auth';
 
@@ -12,6 +25,13 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+/**
+ * Provides authentication state to the component tree.
+ *
+ * On mount, reads the stored token from localStorage and validates it
+ * against the server. If the server is unreachable, the stored token is
+ * treated as valid so the app remains usable offline.
+ */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [deviceId, setDeviceId] = useState<string | null>(null);
@@ -74,6 +94,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Hook to access the current authentication state and actions.
+ *
+ * Must be called within an {@link AuthProvider}.
+ *
+ * @returns The auth state (`status`, `deviceId`) and actions (`login`, `logout`).
+ */
 export function useAuth(): AuthState {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');

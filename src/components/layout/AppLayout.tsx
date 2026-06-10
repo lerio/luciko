@@ -1,3 +1,17 @@
+/**
+ * Main application layout — navigation, view routing, and cloud sync orchestration.
+ *
+ * Responsibilities:
+ * - Renders the top navigation bar with Chat / Search / Import tabs and a logout button.
+ * - Manages view state (`chat | search | import | posts`) and routes to the correct page.
+ * - Handles chat message pagination via a {@link paginationReducer} (infinite scroll).
+ * - Pings `/api/health` on mount and every 5 minutes to track cloud connectivity.
+ * - Triggers the initial `syncAll()` pull/push cycle once the cloud is reachable.
+ * - Coordinates focus requests from Search → Chat and Search → Posts.
+ *
+ * @module AppLayout
+ */
+
 import { useState, useEffect, useCallback, useReducer, useRef } from 'react';
 import type { Message } from '../../types/chat';
 import { ChatArea } from './ChatArea';
@@ -31,6 +45,13 @@ type PaginationAction =
     | { type: 'NO_MORE_OLDER' }
     | { type: 'NO_MORE_NEWER' };
 
+/**
+ * Reducer for the chat message pagination window.
+ *
+ * Manages a sliding window of messages with support for loading older pages,
+ * loading newer pages, resetting, and jumping to a specific position.
+ * Deduplicates messages by id when merging batches.
+ */
 function paginationReducer(state: PaginationState, action: PaginationAction): PaginationState {
     switch (action.type) {
         case 'SET_FETCHING':
@@ -93,6 +114,13 @@ const initialPagination: PaginationState = {
     isFetching: false,
 };
 
+/**
+ * Top-level layout component.
+ *
+ * Manages cloud connectivity polling, initial sync, view switching,
+ * and chat message pagination. Acts as the primary coordinator between
+ * the navigation UI and the page components.
+ */
 export function AppLayout() {
     const activeChat = TARGET_CHAT;
     const [pagination, dispatch] = useReducer(paginationReducer, initialPagination);

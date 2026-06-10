@@ -1,3 +1,25 @@
+/**
+ * Import page — drag-and-drop file upload with auto-detection and cloud sync.
+ *
+ * Features:
+ * - **Auto-detection** — Probes the uploaded file against a registry of 8
+ *   import handlers, each with a `detect` function that inspects ZIP contents
+ *   or file extensions. See {@link HANDLERS}.
+ * - **Parse → Import → Sync pipeline** — Once the format is detected, the file
+ *   is parsed by the matching handler, the results are imported into IndexedDB
+ *   via {@link importMessages} or {@link importPosts}, and newly-inserted items
+ *   are handed off to {@link syncNewItems} for background cloud upload.
+ * - **Progress feedback** — Shows import stats (total, inserted, updated,
+ *   duplicates skipped) and live cloud sync progress via
+ *   {@link onSyncProgress}.
+ * - **Storage info** — Renders {@link StorageInfo} to show local vs remote
+ *   item counts.
+ * - **Debug logs** — Parser logs are displayed in a collapsible section for
+ *   troubleshooting.
+ *
+ * @module ImportPage
+ */
+
 import { useState, useRef, useEffect } from 'react';
 import type { ChangeEvent } from 'react';
 import { Upload, CheckCircle, AlertCircle, Cloud, CloudOff } from 'lucide-react';
@@ -41,6 +63,17 @@ type ImportHandler = {
     parse: (file: File, chatId: string, zip?: JSZip) => Promise<ImportResult>;
 };
 
+/**
+ * Ordered list of import format handlers.
+ *
+ * Each handler provides a `detect` function (called with the file and
+ * optionally a pre-loaded JSZip instance) and a `parse` function that
+ * converts the file into messages or posts. Handlers are tried in order;
+ * the first match wins.
+ *
+ * Order matters: more specific detectors (e.g., iMessage JSON structure)
+ * come before broader ones (e.g., generic CSV extension match).
+ */
 const HANDLERS: ImportHandler[] = [
     {
         type: 'imessage',
@@ -104,6 +137,12 @@ const HANDLERS: ImportHandler[] = [
     }
 ];
 
+/**
+ * Import page component.
+ *
+ * Renders a drag-and-drop upload zone, handles file detection/parsing/import,
+ * triggers background cloud sync, and displays progress feedback.
+ */
 export function ImportPage() {
     const [isDragging, setIsDragging] = useState(false);
     const [importStatus, setImportStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
