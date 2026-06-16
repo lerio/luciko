@@ -575,8 +575,10 @@ const worker = {
           const db = env.LUCIKO_DB;
           const now = Date.now();
 
-          // Replace all bookmarks: delete existing, insert new set
-          await db.exec('DELETE FROM archive_bookmarks');
+          // Replace all bookmarks: delete existing, insert new set.
+          // Use prepare().run() rather than exec() — exec is designed for
+          // multi-statement DDL/migration scripts, not DML in request handlers.
+          await db.prepare('DELETE FROM archive_bookmarks').run();
 
           let count = 0;
           for (const bm of body.bookmarks) {
