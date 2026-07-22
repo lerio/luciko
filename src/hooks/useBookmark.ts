@@ -31,11 +31,18 @@ export function useBookmark(scope: string): {
   const [isReady, setIsReady] = useState(false);
   const loadTokenRef = useRef(0);
 
+  // Tracks whether the current bookmarkedId change came from a user toggle
+  // (as opposed to initial load from IndexedDB). Prevents re-stamping old
+  // bookmarks with a fresh updatedAt on mount, which would make stale local
+  // data win against newer server data in the sync merge.
+  const isUserAction = useRef(false);
+
   // Load bookmark from IndexedDB on mount (or when scope changes).
   useEffect(() => {
     let isActive = true;
     const loadToken = loadTokenRef.current + 1;
     loadTokenRef.current = loadToken;
+    isUserAction.current = false;
 
     const load = async () => {
       try {
@@ -59,10 +66,15 @@ export function useBookmark(scope: string): {
     };
   }, [scope]);
 
-  // Persist bookmark to IndexedDB on change (gated by isReady so initial
-  // load doesn't trigger a spurious write).
+  // Persist bookmark to IndexedDB on user-initiated changes only.
+  // We skip the initial mount (bookmarkedId loaded from IndexedDB) to avoid
+  // re-stamping old data with a fresh updatedAt timestamp, which would
+  // cause stale local bookmarks to win the sync merge against newer
+  // server data.
   useEffect(() => {
     if (!isReady) return;
+    if (!isUserAction.current) return;
+    isUserAction.current = false;
 
     const persist = async () => {
       try {
@@ -84,6 +96,7 @@ export function useBookmark(scope: string): {
   const toggleBookmark = useCallback((id: string) => {
     // Invalidate any in-flight load so it won't overwrite this toggle.
     loadTokenRef.current += 1;
+    isUserAction.current = true;
     setBookmarkedId((current) => (current === id ? null : id));
   }, []);
 
