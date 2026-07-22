@@ -38,12 +38,12 @@ interface LucikoDB extends DBSchema {
     };
     bookmarks: {
         key: string;
-        value: { chatId: string; messageId: string };
+        value: { chatId: string; messageId: string; updatedAt: number };
     };
 }
 
 const DB_NAME = 'luciko-db';
-const DB_VERSION = 8; // Add hidden items store
+const DB_VERSION = 9; // Add updatedAt to bookmarks
 
 let dbPromise: Promise<IDBPDatabase<LucikoDB>> | undefined;
 
@@ -136,19 +136,21 @@ export async function getBookmark(chatId: string): Promise<string | null> {
     return record?.messageId ?? null;
 }
 
-export async function getAllBookmarks(): Promise<Array<{ chatId: string; messageId: string }>> {
+export async function getAllBookmarks(): Promise<Array<{ chatId: string; messageId: string; updatedAt: number }>> {
     const db = await initDB();
     const tx = db.transaction('bookmarks', 'readonly');
-    const bookmarks: Array<{ chatId: string; messageId: string }> = [];
+    const bookmarks: Array<{ chatId: string; messageId: string; updatedAt: number }> = [];
     let cursor = await tx.store.openCursor();
     while (cursor) {
-        bookmarks.push(cursor.value);
+        // Default updatedAt to 0 for records created before this field existed
+        const value = cursor.value;
+        bookmarks.push({ chatId: value.chatId, messageId: value.messageId, updatedAt: value.updatedAt ?? 0 });
         cursor = await cursor.continue();
     }
     return bookmarks;
 }
 
-export async function importBookmarks(bookmarks: Array<{ chatId: string; messageId: string }>): Promise<void> {
+export async function importBookmarks(bookmarks: Array<{ chatId: string; messageId: string; updatedAt?: number }>): Promise<void> {
     const db = await initDB();
     const tx = db.transaction('bookmarks', 'readwrite');
     // Clear all existing bookmarks, then insert the new set.
@@ -156,7 +158,11 @@ export async function importBookmarks(bookmarks: Array<{ chatId: string; message
     // Using clear() is atomic and avoids cursor-delete-continue quirks.
     await tx.store.clear();
     for (const bookmark of bookmarks) {
-        await tx.store.put(bookmark);
+        await tx.store.put({
+            chatId: bookmark.chatId,
+            messageId: bookmark.messageId,
+            updatedAt: bookmark.updatedAt ?? Date.now(),
+        });
     }
     await tx.done;
 }
@@ -164,7 +170,7 @@ export async function importBookmarks(bookmarks: Array<{ chatId: string; message
 export async function setBookmark(chatId: string, messageId: string | null): Promise<void> {
     const db = await initDB();
     if (messageId) {
-        await db.put('bookmarks', { chatId, messageId });
+        await db.put('bookmarks', { chatId, messageId, updatedAt: Date.now() });
     } else {
         await db.delete('bookmarks', chatId);
     }

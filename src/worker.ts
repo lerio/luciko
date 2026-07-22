@@ -567,13 +567,12 @@ const worker = {
         if (!env.LUCIKO_DB) return json({ ok: false, error: 'D1 not available' }, { status: 503 });
 
         try {
-          const body = await request.json() as { bookmarks: Array<{ chatId: string; messageId: string }> };
+          const body = await request.json() as { bookmarks: Array<{ chatId: string; messageId: string; updatedAt?: number }> };
           if (!Array.isArray(body.bookmarks)) {
             return json({ ok: false, error: 'Invalid request: bookmarks must be an array' }, { status: 400 });
           }
 
           const db = env.LUCIKO_DB;
-          const now = Date.now();
 
           // Replace all bookmarks: delete existing, insert new set.
           // Use prepare().run() rather than exec() — exec is designed for
@@ -583,9 +582,10 @@ const worker = {
           let count = 0;
           for (const bm of body.bookmarks) {
             if (!bm.chatId || !bm.messageId) continue;
+            const upAt = bm.updatedAt ?? Date.now();
             await db.prepare(
               'INSERT INTO archive_bookmarks (chat_id, message_id, updated_at) VALUES (?, ?, ?)'
-            ).bind(bm.chatId, bm.messageId, now).run();
+            ).bind(bm.chatId, bm.messageId, upAt).run();
             count++;
           }
 

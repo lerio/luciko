@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getBookmark, setBookmark } from '../store/db';
-import { markLocalChanged } from '../store/archiveSync';
+import { markLocalChanged, syncBookmarks } from '../store/archiveSync';
 
 /**
  * Manages a bookmark for a given scope.
@@ -68,6 +68,7 @@ export function useBookmark(scope: string): {
       try {
         await setBookmark(scope, bookmarkedId);
         markLocalChanged();
+        void syncBookmarks(); // push bookmark change to server immediately
       } catch (error) {
         console.warn('Failed to persist bookmark to storage:', error);
       }

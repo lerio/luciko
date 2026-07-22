@@ -778,7 +778,7 @@ export async function pullNewItems(): Promise<{ success: boolean; inserted: numb
  * Sync bookmarks bidirectionally: pull from server, merge with local, then push.
  * Bookmarks are a small dataset (one row per chat) — full-set replacement on both sides.
  */
-async function syncBookmarks(): Promise<void> {
+export async function syncBookmarks(): Promise<void> {
   try {
     const authHeaders = getAuthHeaders();
     if (!authHeaders.Authorization) {
@@ -803,17 +803,28 @@ async function syncBookmarks(): Promise<void> {
             pulledBookmarks = data.bookmarks;
             console.log('[syncBookmarks] Pulled', pulledBookmarks.length, 'bookmarks from server');
 
-            // Merge server bookmarks with local: union of both sets.
-            // Server bookmarks take precedence if both have the same chatId.
+            // Merge server bookmarks with local keeping the newer entry per chatId.
+            // Both sides carry an updatedAt timestamp — higher value wins.
             const localBookmarks = await getAllBookmarks();
-            const merged = new Map<string, string>();
+            const merged = new Map<string, { messageId: string; updatedAt: number }>();
+
+            // Insert local bookmarks first
             for (const bm of localBookmarks) {
-              merged.set(bm.chatId, bm.messageId);
+              merged.set(bm.chatId, { messageId: bm.messageId, updatedAt: bm.updatedAt ?? 0 });
             }
+            // For each server bookmark, keep whichever has the higher updatedAt
             for (const bm of pulledBookmarks) {
-              merged.set(bm.chatId, bm.messageId);
+              const existing = merged.get(bm.chatId);
+              const serverUpdatedAt = (bm as { updatedAt?: number }).updatedAt ?? 0;
+              if (!existing || serverUpdatedAt > existing.updatedAt) {
+                merged.set(bm.chatId, { messageId: bm.messageId, updatedAt: serverUpdatedAt });
+              }
             }
-            const mergedList = Array.from(merged.entries()).map(([chatId, messageId]) => ({ chatId, messageId }));
+            const mergedList = Array.from(merged.entries()).map(([chatId, data]) => ({
+              chatId,
+              messageId: data.messageId,
+              updatedAt: data.updatedAt,
+            }));
             await importBookmarks(mergedList);
             console.log('[syncBookmarks] Merged', mergedList.length, 'bookmarks locally');
           }
@@ -838,7 +849,11 @@ async function syncBookmarks(): Promise<void> {
       const resp = await fetch('/api/sync/bookmarks/upload', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ bookmarks: localBookmarks }),
+        body: JSON.stringify({ bookmarks: localBookmarks.map(bm => ({
+          chatId: bm.chatId,
+          messageId: bm.messageId,
+          updatedAt: bm.updatedAt ?? Date.now(),
+        })) }),
       });
 
       if (!resp.ok) {
