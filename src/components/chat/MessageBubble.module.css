@@ -238,7 +238,6 @@
   line-height: 20px;
   color: var(--color-text-primary);
   white-space: pre-wrap;
-  overflow-wrap: break-word;
 }
 
 .senderName {
