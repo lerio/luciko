@@ -191,7 +191,7 @@
   line-height: 1.5;
   color: var(--color-text-primary);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .mediaGrid {
@@ -219,7 +219,7 @@
   color: var(--color-primary);
   font-size: 14px;
   text-decoration: none;
-  word-break: break-word;
+  overflow-wrap: break-word;
   max-width: 100%;
 }
 
