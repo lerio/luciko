@@ -172,6 +172,7 @@
   box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
   position: relative;
   max-width: 80%;
+  overflow: hidden;
 }
 
 .bubbleWithAudio {
@@ -234,10 +235,11 @@
 
 .messageContent {
   font-family: "SF Pro Text", "SF Pro Icons", system, -apple-system, system-ui, "system-ui", "Helvetica Neue", Helvetica, Arial, "Lucida Grande", "Kohinoor Devanagari", sans-serif;
-  font-size: 14px;
-  line-height: 20px;
+  font-size: clamp(14px, 14.2px + 0.3vw, 16px);
+  line-height: 1.4;
   color: var(--color-text-primary);
   white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .senderName {
@@ -392,12 +394,4 @@
 .reactionCount {
   font-size: 11px;
   color: var(--color-text-secondary);
-}
-
-@media (max-width: 600px) {
-  .messageContent {
-    font-size: 20px;
-    line-height: 26px;
-    letter-spacing: 0.01rem;
-  }
 }
