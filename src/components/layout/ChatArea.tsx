@@ -44,6 +44,15 @@ interface ChatAreaProps {
 /** Hardcoded current user — used to determine message alignment (sent vs received). */
 const CURRENT_USER_ID = "Valerio Donati";
 
+/** Vertical offset (px) between the scroll container's top edge and a focused message. */
+const SCROLL_ALIGN_OFFSET = 8;
+/** Max frames to wait for a jumped message window to render before giving up. */
+const SCROLL_MAX_WAIT_FRAMES = 30;
+/** Max frames to keep re-asserting the scroll position while layout shifts (async attachment loads). */
+const SCROLL_MAX_SETTLE_FRAMES = 90;
+/** Consecutive stable frames needed before a scroll is considered settled. */
+const SCROLL_STABLE_FRAMES = 3;
+
 /**
  * Renders the chat area for a single conversation.
  *
@@ -68,7 +77,15 @@ export function ChatArea({
   const messagesRef = useRef<HTMLDivElement>(null);
   const initialAutoScrollRef = useRef(true);
   const hiddenMarkerRef = useRef<HTMLElement | null>(null);
-  const [isBookmarkScrollPending, setIsBookmarkScrollPending] = useState(false);
+  // Blocks sentinel-triggered page loads while a bookmark/search jump is
+  // landing, so a prepend can't shift the layout out from under the scroll.
+  const suppressSentinelLoadsRef = useRef(false);
+  // A "load older" request that arrived while loads were suppressed; run it
+  // once the scroll settles so the sentinel never gets stuck un-serviced.
+  const deferredLoadOlderRef = useRef(false);
+  // Identifies the most recent scroll alignment loop; older loops bail out
+  // immediately when superseded.
+  const activeScrollAlignRef = useRef<object | null>(null);
   const [stickyDateLabel, setStickyDateLabel] = useState<string | null>(null);
 
   const { bookmarkedId: bookmarkedMessageId, toggleBookmark: handleBookmark, isReady: isBookmarkReady } = useBookmark(activeChat?.id ?? '');
@@ -86,6 +103,10 @@ export function ChatArea({
 
   const handleLoadOlder = useCallback(async () => {
     if (!onLoadOlder || !messagesRef.current) return;
+    if (suppressSentinelLoadsRef.current) {
+      deferredLoadOlderRef.current = true;
+      return;
+    }
     const container = messagesRef.current;
     const prevScrollHeight = container.scrollHeight;
     const prevScrollTop = container.scrollTop;
@@ -103,88 +124,148 @@ export function ChatArea({
     await onLoadNewer();
   }, [onLoadNewer]);
 
+  /**
+   * Scrolls the given message into view, jumping to its surrounding window
+   * first if it isn't loaded yet.
+   *
+   * Positioning is deliberately instant rather than smooth: a smooth
+   * animation locks onto an offset computed once, so content that loads or
+   * prepends above the target while it runs (attachment blobs, sentinel page
+   * loads) makes it land on the wrong message. Instead, a short rAF loop
+   * re-asserts the position frame by frame until the layout stops shifting.
+   * Resolves once the scroll has settled, was superseded, or gave up.
+   */
+  const scrollToMessage = useCallback(
+    async (messageId: string): Promise<boolean> => {
+      const container = messagesRef.current;
+      if (!container) return false;
+
+      if (!document.getElementById(`message-${messageId}`) && onJumpToBookmark) {
+        suppressSentinelLoadsRef.current = true;
+        const didJump = await onJumpToBookmark(messageId);
+        if (!didJump) {
+          suppressSentinelLoadsRef.current = false;
+          deferredLoadOlderRef.current = false;
+          return false;
+        }
+      }
+
+      suppressSentinelLoadsRef.current = true;
+      const token = {};
+      activeScrollAlignRef.current = token;
+
+      return new Promise<boolean>((resolve) => {
+        let waitFrames = 0;
+        let settleFrames = 0;
+        let stableFrames = 0;
+        let lastAppliedScrollTop: number | null = null;
+
+        const finish = () => {
+          if (activeScrollAlignRef.current === token) {
+            activeScrollAlignRef.current = null;
+            suppressSentinelLoadsRef.current = false;
+          }
+          if (deferredLoadOlderRef.current) {
+            deferredLoadOlderRef.current = false;
+            void handleLoadOlder();
+          }
+          resolve(true);
+        };
+
+        const step = () => {
+          if (activeScrollAlignRef.current !== token) {
+            resolve(true); // superseded by a newer scroll request
+            return;
+          }
+
+          if (!container.isConnected) {
+            finish();
+            return;
+          }
+
+          const target = document.getElementById(`message-${messageId}`);
+          if (!target) {
+            // The jumped window hasn't committed yet (or never will).
+            if (waitFrames < SCROLL_MAX_WAIT_FRAMES) {
+              waitFrames += 1;
+              requestAnimationFrame(step);
+            } else {
+              finish();
+            }
+            return;
+          }
+
+          // Bail out if the user started scrolling during the alignment.
+          if (
+            lastAppliedScrollTop !== null &&
+            Math.abs(container.scrollTop - lastAppliedScrollTop) > 2
+          ) {
+            finish();
+            return;
+          }
+
+          const desiredTop =
+            container.getBoundingClientRect().top + SCROLL_ALIGN_OFFSET;
+          const delta = target.getBoundingClientRect().top - desiredTop;
+          lastAppliedScrollTop = Math.max(0, container.scrollTop + delta);
+          container.scrollTop = lastAppliedScrollTop;
+
+          settleFrames += 1;
+          const atTopClamped = container.scrollTop === 0 && delta < 0;
+          if (Math.abs(delta) < 0.5 || atTopClamped) {
+            stableFrames += 1;
+          } else {
+            stableFrames = 0;
+          }
+
+          if (
+            stableFrames >= SCROLL_STABLE_FRAMES ||
+            settleFrames >= SCROLL_MAX_SETTLE_FRAMES
+          ) {
+            finish();
+            return;
+          }
+          requestAnimationFrame(step);
+        };
+
+        requestAnimationFrame(step);
+      });
+    },
+    [onJumpToBookmark, handleLoadOlder],
+  );
+
   const handleScrollToBookmark = useCallback(async () => {
     if (!bookmarkedMessageId) return;
-    const target = document.getElementById(`message-${bookmarkedMessageId}`);
-    if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-      return;
-    }
-
-    if (onJumpToBookmark) {
-      setIsBookmarkScrollPending(true);
-      const didJump = await onJumpToBookmark(bookmarkedMessageId);
-      if (!didJump) {
-        setIsBookmarkScrollPending(false);
-      }
-    }
-  }, [bookmarkedMessageId, onJumpToBookmark]);
+    await scrollToMessage(bookmarkedMessageId);
+  }, [bookmarkedMessageId, scrollToMessage]);
 
   // Reset auto-scroll flag when the active chat changes.
   useEffect(() => {
     initialAutoScrollRef.current = true;
   }, [activeChat?.id]);
 
-  // Auto-scroll to bookmarked message on initial load.
+  // Auto-scroll to the bookmarked message on initial load.
   useEffect(() => {
     if (!initialAutoScrollRef.current) return;
     if (!isBookmarkReady || !bookmarkedMessageId) return;
     if (messages.length === 0) return;
 
     initialAutoScrollRef.current = false;
-
-    const target = document.getElementById(`message-${bookmarkedMessageId}`);
-    if (target) {
-      requestAnimationFrame(() => {
-        target.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
-      return;
-    }
-
-    if (onJumpToBookmark) {
-      requestAnimationFrame(() => setIsBookmarkScrollPending(true));
-      onJumpToBookmark(bookmarkedMessageId).then((didJump) => {
-        if (!didJump) {
-          setIsBookmarkScrollPending(false);
-        }
-      });
-    }
-  }, [isBookmarkReady, bookmarkedMessageId, messages.length, onJumpToBookmark]);
+    void scrollToMessage(bookmarkedMessageId);
+  }, [isBookmarkReady, bookmarkedMessageId, messages.length, scrollToMessage]);
 
   useEffect(() => {
-    if (!isBookmarkScrollPending || !bookmarkedMessageId) return;
-    const target = document.getElementById(`message-${bookmarkedMessageId}`);
-    if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
-    requestAnimationFrame(() => setIsBookmarkScrollPending(false));
-  }, [bookmarkedMessageId, isBookmarkScrollPending, messages.length]);
-
-  useEffect(() => {
-    if (!focusRequest?.messageId || !activeChat?.id || !onJumpToBookmark)
-      return;
+    if (!focusRequest?.messageId || !activeChat?.id) return;
 
     let isActive = true;
     const jump = async () => {
-      setIsBookmarkScrollPending(true);
-      try {
-        const didJump = await onJumpToBookmark(focusRequest.messageId);
-        if (!isActive || !didJump) return;
-
-        const target = document.getElementById(
-          `message-${focusRequest.messageId}`,
-        );
-        if (target) {
-          target.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
+      const didScroll = await scrollToMessage(focusRequest.messageId);
+      if (isActive && didScroll) {
         onFocusRequestHandled?.();
-      } finally {
-        if (isActive) {
-          setIsBookmarkScrollPending(false);
-        }
       }
     };
 
-    jump();
+    void jump();
     return () => {
       isActive = false;
     };
@@ -192,7 +273,7 @@ export function ChatArea({
     activeChat?.id,
     focusRequest?.messageId,
     focusRequest?.token,
-    onJumpToBookmark,
+    scrollToMessage,
     onFocusRequestHandled,
   ]);
 
